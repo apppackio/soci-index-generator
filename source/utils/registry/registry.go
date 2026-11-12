@@ -85,8 +85,10 @@ func (registry *Registry) Pull(ctx context.Context, repositoryName string, sociS
 // Push a OCI artifact to remote registry
 // descriptor: ocispec Descriptor of the artifact
 // ociStore: the local OCI store
-// tag: optional tag to apply to the artifact (empty string means no tag)
-func (registry *Registry) Push(ctx context.Context, sociStore *store.SociStore, indexDesc ocispec.Descriptor, repositoryName string, tag string) error {
+// tags: tags to apply to the artifact. Any tagging failure fails the push: a
+// half-tagged index leaves some tags on the index and some on the original
+// manifest. Failing leaves the original manifest holding its tags, which is safe.
+func (registry *Registry) Push(ctx context.Context, sociStore *store.SociStore, indexDesc ocispec.Descriptor, repositoryName string, tags []string) error {
 	log.Info(ctx, "Pushing artifact")
 
 	repo, err := registry.registry.Repository(ctx, repositoryName)
@@ -104,12 +106,10 @@ func (registry *Registry) Push(ctx context.Context, sociStore *store.SociStore, 
 		return err
 	}
 
-	// If a tag is provided, tag the artifact in the remote repository
-	if tag != "" {
+	for _, tag := range tags {
 		log.Info(ctx, fmt.Sprintf("Tagging index with %s", tag))
-		err = repo.Tag(ctx, indexDesc, tag)
-		if err != nil {
-			return fmt.Errorf("failed to tag artifact: %w", err)
+		if err = repo.Tag(ctx, indexDesc, tag); err != nil {
+			return fmt.Errorf("failed to tag artifact with %q: %w", tag, err)
 		}
 	}
 

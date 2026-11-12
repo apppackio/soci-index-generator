@@ -125,8 +125,8 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 		return "Exited early due to manifest validation error", nil
 	}
 
-	// For V2, only convert images that have a tag and tag the newly generated image index
-	var tag string
+	// For V2, only convert images that have a tag, and move those tags onto the new index
+	var tags []string
 	if sociIndexVersion == "V2" {
 		// Get the original image tag if available
 		originalTag, ok := ctx.Value(ImageTagKey).(string)
@@ -135,8 +135,10 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 			return "Skipped SOCI index generation for V2 as image has no tag", nil
 		}
 
-		tag = originalTag + "-soci"
-		log.Info(ctx, fmt.Sprintf("Using original image tag with suffix: %s", tag))
+		// The converted index takes over every tag on the source digest, so
+		// workloads deploying {repo}:{tag} get lazy loading.
+		tags = registryutils.TagsToMove(originalTag, info.Tags)
+		log.Info(ctx, fmt.Sprintf("Moving tags onto the converted index: %v", tags))
 	}
 
 	// Directory in lambda storage to store images and SOCI artifacts
@@ -180,7 +182,7 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 
 	ctx = context.WithValue(ctx, SOCIIndexDigestKey, indexDescriptor.Digest.String())
 
-	err = registry.Push(ctx, sociStore, *indexDescriptor, repo, tag)
+	err = registry.Push(ctx, sociStore, *indexDescriptor, repo, tags)
 	if err != nil {
 		return lambdaError(ctx, PushFailedMessage, err)
 	}
