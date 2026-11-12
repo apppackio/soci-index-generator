@@ -65,7 +65,9 @@ Run: the same `index_structure.sh` command as Q1. It checks exactly this field
 Raw index manifest JSON from a real conversion:
 
 ```
-NOT RUN. Paste the full stdout of index_structure.sh here, unedited.
+NOT RUN. Paste the full output of `./verify/index_structure.sh ... 2>&1` here,
+unedited. The `imageManifestMediaType:` line goes to stderr, so without `2>&1`
+it is missing.
 ```
 
 ## Q3. Do all original tags (`{commit}`, `build-NNN`, `latest`) move onto the index?
@@ -97,15 +99,47 @@ against the same image before conversion.
 
 Result: NOT RUN.
 
-## Q5. Does re-invoking on the same digest, and on the index's own digest, skip without pushing?
+## Q5. Does a tag move re-enter conversion, and are stale re-deliveries harmless?
 
-Run: invoke the function again with an event for (a) the original image
-digest and (b) the converted index's digest. Check the response and
-`aws ecr describe-images` / CloudTrail `PutImage` events for no new pushes.
+The loop guard is the single most important correctness property. **No unit
+test enforces it**: `shouldSkipConversion` is tested, but nothing fails if the
+handler stops calling `IsConverted`, or if someone moves that call below `Pull`
+(see the LOAD-BEARING ORDER comment in `source/handler.go`). This question is
+the only regression net. Re-run it after any change to the handler prologue.
 
-- Pass: both return `AlreadyConvertedMessage`, and no `PutImage` occurs.
-- Fail obliges: stop; this is the loop under production conditions. Depends on
-  Q2; if Q2 failed, expect (b) to fail too.
+Run, after a successful conversion of an image tagged `{commit}`, `build-NNN`,
+`latest`. First record `aws ecr describe-images --repository-name <repo>`
+(every digest and its tags) as the "before" state. Then invoke the function
+with a synthetic event for each of:
+
+- (b) **the converted index's own digest** (with `image-tag` set to one of the
+  moved tags). This is the event a tag move really produces, and the loop
+  property that matters.
+- (a) **the original image digest** (with the same `image-tag`). The original
+  manifest is still a plain image manifest, so `IsConverted` is false and the
+  loop guard does **not** fire for it; that is correct. It must instead skip
+  because no tag still resolves to it (every tag now points at the index).
+
+Expected responses:
+
+| Event | Response | Metric `reason` |
+|---|---|---|
+| (b) index digest | `AlreadyConvertedMessage` ("Skipping image: already converted to a SOCI index") | `already-converted` |
+| (a) original digest | `NoTagsResolveMessage` ("Skipping image: no candidate tag still points at this image") | `no-tags-resolve` |
+
+Both return a nil error. The observable that proves there is no loop:
+
+1. Run `aws ecr describe-images --repository-name <repo>` again and diff
+   against the "before" state: **no tag changed digest, and no new manifest
+   appears**.
+2. CloudTrail shows **no `PutImage` event** from either invocation.
+
+- Pass: both responses as in the table, and both observables hold.
+- Fail obliges: if (b) does not return `AlreadyConvertedMessage` or anything
+  is pushed, stop: this is the loop under production conditions. Depends on Q2;
+  if Q2 failed, expect (b) to fail too. If only (a) differs (for example it
+  converts again because a tag still resolves to the original), investigate the
+  tag move (Q3) before touching the guard: (a) is not a guard question.
 
 Result: NOT RUN.
 
@@ -122,5 +156,6 @@ AWS. Run against the synthetic fixtures in `verify/fixtures/`:
 | synthetic-plain-manifest.json | 1 | 1 |
 | synthetic-artifacttype-wrong-place.json | 1 | 1 |
 | synthetic-malformed-manifest.json | 2 | 2 |
+| synthetic-nonobject-manifest.json | 2 | 2 |
 | synthetic-malformed-response.json | 2 | 2 |
 | synthetic-unresolved.json | 2 | 2 |

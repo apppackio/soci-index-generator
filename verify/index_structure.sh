@@ -10,6 +10,15 @@
 # The raw manifest JSON is always printed to stdout (when one was obtained);
 # diagnostics go to stderr. It is the evidence; paste it into RESULTS.md.
 #
+# DELIBERATELY STRICTER than the Go loop guard. This script accepts only an OCI
+# image index (application/vnd.oci.image.index.v1+json). The guard
+# (IsSociConvertedIndex) also accepts a Docker manifest list. That is on purpose:
+# the guard must err toward "skip" (a false positive costs one image its lazy
+# loading), while this script answers "did Convert() emit what Fargate expects",
+# where a Docker manifest list is a FAIL. Do not loosen this script to match the
+# guard, and do not tighten the guard to match this script (the guard would then
+# let a converted index back into conversion, which is the loop).
+#
 # Exit codes: 0 pass; 1 verdict is "no"; 2 usage error, unresolved tag, or
 # unparseable response.
 set -uo pipefail
@@ -63,6 +72,13 @@ if echo "$manifest" | jq . 2>/dev/null; then :; else
   exit 2
 fi
 echo "--------------------" >&2
+
+# Valid JSON that is not an object (a string, array, number) is "could not
+# tell", not "the index is wrong".
+if ! echo "$manifest" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  echo "imageManifest is valid JSON but not an object" >&2
+  exit 2
+fi
 
 fail=0
 if [ "$media" != "$WANT_INDEX" ]; then
