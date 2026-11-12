@@ -1,0 +1,79 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Automerge is on, and that is safe here because merging is not releasing. This repo publishes only on a `v*` tag, so an automerged bump reaches `main` and stops there, gated by CI, which includes the reproducibility check. Nothing reaches a customer account until someone cuts a tag.",
+    "Renovate tracks dependencies only. It does not track the upstream fork source (awslabs/cfn-ecr-aws-soci-index-builder); see the README."
+  ],
+  "extends": [
+    ":configMigration",
+    "group:monorepos",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "automerge": true,
+  "automergeType": "pr",
+  "dependencyDashboard": true,
+  "dependencyDashboardOSVVulnerabilitySummary": "all",
+  "minimumReleaseAge": "7 days",
+  "osvVulnerabilityAlerts": true,
+  "constraints": {
+    "go": "1.24"
+  },
+  "packageRules": [
+    {
+      "description": "Everything that pins the Go toolchain moves in one PR: the Dockerfile's `golang:<ver>-alpine` builder stage and the `go` directive in source/go.mod. There is no .tool-versions and no setup-go here: make test and make build both run inside the pinned builder image, so that image's digest is the single toolchain pin. minimumReleaseAge is off for the group because it is what splits it: the Docker datasource reports no releaseTimestamp, so a base image can never age, while the go directive can. Whichever side is ready first ships alone, because Renovate drops pending upgrades from a branch that has any ready one. CI gates the group instead of a soak.",
+      "groupName": "go runtime",
+      "matchDepNames": [
+        "go",
+        "golang"
+      ],
+      "minimumReleaseAge": null
+    },
+    {
+      "description": "A pin fixes a floating tag to the version already in use, so there is no newer release to age. Renovate synthesizes pin updates with no releaseTimestamp, and the default minimumReleaseAgeBehaviour of timestamp-required holds those pending forever.",
+      "matchUpdateTypes": ["pin"],
+      "minimumReleaseAge": null
+    },
+    {
+      "description": "The Docker datasource reports no releaseTimestamp for a tag, so timestamp-required leaves every base image update pending forever. That is invisible when a dep is alone on a branch -- it just never ships -- but in a group it is worse: Renovate drops the pending upgrade and ships the rest, which is how `golang:1.25-alpine` got left behind while .tool-versions moved to 1.27.2 in #53. Age these on the version the registry reports instead of refusing to age them at all. Applies to the `docker:<ver>-dind` final stage too.",
+      "matchDatasources": ["docker"],
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    },
+    {
+      "description": "source/vendor/ is checked in deliberately: it is what makes the public source complete enough to rebuild offline, byte for byte, with no network. source/ builds with -mod=vendor, so a bump that updates go.mod without regenerating vendor/ leaves a repo that does not build. gomodTidy and gomodVendor therefore must stay on. The large diffs they produce are the cost of vendoring, not a problem to solve by dropping the option.",
+      "matchManagers": ["gomod"],
+      "postUpdateOptions": ["gomodTidy", "gomodVendor"]
+    },
+    {
+      "description": "soci-snapshotter decides the format of the index this function exists to produce, and no test in this repo can tell a good v2 index from a bad one -- only the live Fargate check in verify/ can. Never automerge it. A bump is accepted by re-running verify/ and updating verify/RESULTS.md in the same PR.",
+      "matchPackageNames": ["github.com/awslabs/soci-snapshotter"],
+      "automerge": false,
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Renovate ignores indirect Go dependencies by default, so security advisories against them never turn into fixes. Enable them, but hold routine updates behind a dashboard checkbox so that every transitive bump doesn't become a PR; vulnerability fixes skip the checkbox on their own.",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["indirect"],
+      "enabled": true,
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "The AWS SDK is split across many separately versioned modules that release in lockstep. One PR each would outpace prConcurrentLimit, so group them. Keep this rule below the indirect one: a branch waits for approval if any single update in it does, and this group holds both direct and indirect modules.",
+      "groupName": "aws sdk",
+      "dependencyDashboardApproval": false,
+      "matchPackageNames": [
+        "github.com/aws/aws-sdk-go-v2",
+        "github.com/aws/aws-sdk-go-v2/**",
+        "github.com/aws/smithy-go"
+      ]
+    }
+  ],
+  "platformAutomerge": true,
+  "lockFileMaintenance": {
+    "dependencyDashboardApproval": true,
+    "enabled": true,
+    "schedule": ["at any time"]
+  },
+  "prConcurrentLimit": 1,
+  "prHourlyLimit": 0,
+  "rangeStrategy": "pin"
+}
