@@ -1,0 +1,15 @@
+{
+  "images": [
+    {
+      "registryId": "123456789012",
+      "repositoryName": "verify",
+      "imageId": {
+        "imageDigest": "sha256:x",
+        "imageTag": "t"
+      },
+      "imageManifest": "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"artifactType\":\"application/vnd.amazon.soci.index.v2+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":1}]}",
+      "imageManifestMediaType": "application/vnd.oci.image.index.v1+json"
+    }
+  ],
+  "failures": []
+}
