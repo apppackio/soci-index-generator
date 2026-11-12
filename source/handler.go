@@ -230,8 +230,8 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	// Only convert images that have a tag, and move those tags onto the new index.
 	originalTag, ok := ctx.Value(ImageTagKey).(string)
 	if !ok || originalTag == "" {
-		log.Info(ctx, "Skipping SOCI index generation as image has no tag")
-		return inv.skip("no-tag", "Skipped SOCI index generation as image has no tag")
+		log.Info(ctx, "Skipping SOCI index generation for V2 as image has no tag")
+		return inv.skip("no-tag", "Skipped SOCI index generation for V2 as image has no tag")
 	}
 
 	// The converted index takes over every tag on the source digest, so

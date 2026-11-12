@@ -203,6 +203,13 @@ during the benchmark.
 generation for V2 as image has no tag". Any AppPack flow that pushes by digest
 alone gets no index, silently.
 
+**Stale deliveries skip before converting.** Before pulling anything, the
+handler resolves every candidate tag; if none still points at the event's
+digest (duplicate delivery, late retry, a newer build took the tag) it skips
+with reason `no-tags-resolve`, because the index it built would be untagged and
+unreferenced. `soci_index_version` defaults to `V2` when unset and any other
+value fails the invocation.
+
 **Which tags get repointed.** `build.go:223` uses `crane.Tag` to add
 `build-NNN` and `latest` aliases at build time, pointing at the original
 manifest. If the generator moves only `{commit}`, those aliases still resolve
