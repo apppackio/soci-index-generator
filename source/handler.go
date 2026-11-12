@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -18,6 +19,7 @@ import (
 	"github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda/events"
 	"github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda/utils/fs"
 	"github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda/utils/log"
+	"github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda/utils/metrics"
 	registryutils "github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda/utils/registry"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-lambda-go/lambdacontext"
@@ -66,9 +68,56 @@ const (
 	SociIndexVersion   string     = "soci_index_version"
 )
 
+// invocation carries what the metric for one HandleRequest call needs. Every exit
+// path ends in exactly one finish call.
+type invocation struct {
+	out        io.Writer
+	app        string
+	start      time.Time
+	repository string
+	digest     string
+	// sizeGuardSkipped records that ECR reported no image size, so the size
+	// ceiling did not run. It rides on whatever metric this invocation emits.
+	sizeGuardSkipped bool
+}
+
+func newInvocation(out io.Writer, app, repository, digest string) *invocation {
+	return &invocation{out: out, app: app, start: time.Now(), repository: repository, digest: digest}
+}
+
+// finish emits the invocation's metric. The error is deliberately dropped: a
+// metrics failure must never change the handler's result, since the worst
+// acceptable outcome is a slow task start, not a lost index.
+func (inv *invocation) finish(outcome, reason string) {
+	props := map[string]string{"repository": inv.repository, "digest": inv.digest}
+	if reason != "" {
+		props["reason"] = reason
+	}
+	if inv.sizeGuardSkipped {
+		props["size_guard"] = "not-enforced"
+	}
+	_ = metrics.Emit(inv.out, inv.app, outcome, time.Since(inv.start), props)
+}
+
+// skip emits a skipped metric and returns the message with a nil error, so
+// Lambda does not retry.
+func (inv *invocation) skip(reason, msg string) (string, error) {
+	inv.finish(metrics.OutcomeSkipped, reason)
+	return msg, nil
+}
+
+// fail emits a failure metric and returns the error to Lambda.
+func (inv *invocation) fail(ctx context.Context, msg string, err error) (string, error) {
+	inv.finish(metrics.OutcomeFailure, msg)
+	return lambdaError(ctx, msg, err)
+}
+
 func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (string, error) {
+	inv := newInvocation(os.Stdout, os.Getenv("APP_NAME"), event.Detail.RepositoryName, event.Detail.ImageDigest)
+
 	ctx, err := validateEvent(ctx, event)
 	if err != nil {
+		inv.finish(metrics.OutcomeSkipped, "invalid-event")
 		return lambdaError(ctx, "ECRImageActionEvent validation error", err)
 	}
 
@@ -83,7 +132,7 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 
 	registry, err := registryutils.Init(ctx, registryUrl)
 	if err != nil {
-		return lambdaError(ctx, "Remote registry initialization error", err)
+		return inv.fail(ctx, "Remote registry initialization error", err)
 	}
 
 	// Loop guard: moving tags onto a converted index raises new PUSH events that
@@ -92,37 +141,38 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	if shouldSkipConversion(converted, err) {
 		if err != nil {
 			log.Warn(ctx, fmt.Sprintf("%s: %v", ConversionCheckFailedMessage, err))
-			return ConversionCheckFailedMessage, nil
+			return inv.skip("conversion-check-failed", ConversionCheckFailedMessage)
 		}
 		log.Info(ctx, AlreadyConvertedMessage)
-		return AlreadyConvertedMessage, nil
+		return inv.skip("already-converted", AlreadyConvertedMessage)
 	}
 
 	// Size ceiling. Each skip returns a nil error so Lambda does not retry.
 	ecrClient, err := registryutils.NewEcrClient(ctx)
 	if err != nil {
-		return lambdaError(ctx, DescribeFailedMessage, err)
+		return inv.fail(ctx, DescribeFailedMessage, err)
 	}
 	info, err := registryutils.DescribeImage(ctx, ecrClient, repo, digest)
 	if err != nil {
-		return lambdaError(ctx, DescribeFailedMessage, err)
+		return inv.fail(ctx, DescribeFailedMessage, err)
 	}
 	if !info.Found {
-		return ImageGoneMessage, nil
+		return inv.skip("image-gone", ImageGoneMessage)
 	}
 	if !info.SizeKnown {
+		inv.sizeGuardSkipped = true
 		log.Warn(ctx, "ECR did not report an image size, so the size ceiling was NOT enforced: the size guard did not run")
 	}
 	if info.Oversized() {
 		log.Warn(ctx, fmt.Sprintf("%s: %d bytes", OversizedMessage, info.SizeBytes))
-		return OversizedMessage, nil
+		return inv.skip("oversized", OversizedMessage)
 	}
 
 	err = registry.ValidateImageDigest(ctx, repo, digest, sociIndexVersion)
 	if err != nil {
 		log.Warn(ctx, fmt.Sprintf("Image manifest validation error: %v", err))
 		// Returning a non error to skip retries
-		return "Exited early due to manifest validation error", nil
+		return inv.skip("manifest-validation", "Exited early due to manifest validation error")
 	}
 
 	// For V2, only convert images that have a tag, and move those tags onto the new index
@@ -132,7 +182,7 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 		originalTag, ok := ctx.Value(ImageTagKey).(string)
 		if !ok || originalTag == "" {
 			log.Info(ctx, "Skipping SOCI index generation for V2 as image has no tag")
-			return "Skipped SOCI index generation for V2 as image has no tag", nil
+			return inv.skip("no-tag", "Skipped SOCI index generation for V2 as image has no tag")
 		}
 
 		// The converted index takes over every tag on the source digest, so
@@ -144,7 +194,7 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	// Directory in lambda storage to store images and SOCI artifacts
 	dataDir, err := createTempDir(ctx)
 	if err != nil {
-		return lambdaError(ctx, "Directory create error", err)
+		return inv.fail(ctx, "Directory create error", err)
 	}
 	defer cleanUp(ctx, dataDir)
 
@@ -158,12 +208,12 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 
 	sociStore, err := initSociStore(ctx, dataDir)
 	if err != nil {
-		return lambdaError(ctx, "OCI storage initialization error", err)
+		return inv.fail(ctx, "OCI storage initialization error", err)
 	}
 
 	desc, err := registry.Pull(ctx, repo, sociStore, digest)
 	if err != nil {
-		return lambdaError(ctx, "Image pull error", err)
+		return inv.fail(ctx, "Image pull error", err)
 	}
 
 	image := images.Image{
@@ -175,19 +225,20 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	if err != nil {
 		if err.Error() == ErrEmptyIndex.Error() {
 			log.Warn(ctx, SkipPushOnEmptyIndexMessage)
-			return SkipPushOnEmptyIndexMessage, nil
+			return inv.skip("empty-index", SkipPushOnEmptyIndexMessage)
 		}
-		return lambdaError(ctx, BuildFailedMessage, err)
+		return inv.fail(ctx, BuildFailedMessage, err)
 	}
 
 	ctx = context.WithValue(ctx, SOCIIndexDigestKey, indexDescriptor.Digest.String())
 
 	err = registry.Push(ctx, sociStore, *indexDescriptor, repo, digest, tags)
 	if err != nil {
-		return lambdaError(ctx, PushFailedMessage, err)
+		return inv.fail(ctx, PushFailedMessage, err)
 	}
 
 	log.Info(ctx, BuildAndPushSuccessMessage)
+	inv.finish(metrics.OutcomeSuccess, "")
 	return BuildAndPushSuccessMessage, nil
 }
 
