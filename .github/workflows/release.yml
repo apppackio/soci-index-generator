@@ -36,9 +36,6 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::101287669015:role/soci-index-generator-github-actions
           aws-region: us-east-1
-      # Publish uploads the zip that was just released, not a rebuild. Confirm
-      # it still matches the hash attached to the release before it goes out.
-      - name: Verify artifact matches release
-        run: cd dist && sha256sum -c soci_index_generator_lambda.zip.sha256
+      # `make publish` verifies dist/ against the released .sha256 itself.
       - name: Publish to regional buckets
         run: make publish VERSION="$GITHUB_REF_NAME"

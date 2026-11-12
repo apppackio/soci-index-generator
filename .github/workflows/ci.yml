@@ -20,13 +20,19 @@ jobs:
       - name: Build
         run: make build
       # A non-reproducible build breaks the audit chain silently, so it is a
-      # failed build: build the same commit again and compare.
+      # failed build. Hash the first build, then build again with --no-cache:
+      # the Dockerfile compiles at image build time, so a cached rebuild would
+      # return the same zip and compare it to itself. Compare the zip and the
+      # bootstrap binary (the stronger signal; zip framing depends on unpinned
+      # apk packages).
       - name: Check build is reproducible
         run: |
-          first=$(sha256sum dist/soci_index_generator_lambda.zip | cut -d' ' -f1)
+          make checksums
+          cp dist/soci_index_generator_lambda.zip.sha256 first-zip.sha256
+          cp dist/bootstrap.sha256 first-bootstrap.sha256
           rm -rf dist
-          make build
-          second=$(sha256sum dist/soci_index_generator_lambda.zip | cut -d' ' -f1)
-          echo "first:  $first"
-          echo "second: $second"
-          test "$first" = "$second"
+          make build BUILD_FLAGS=--no-cache
+          make checksums
+          cat first-zip.sha256 dist/soci_index_generator_lambda.zip.sha256 first-bootstrap.sha256 dist/bootstrap.sha256
+          cmp first-bootstrap.sha256 dist/bootstrap.sha256
+          cmp first-zip.sha256 dist/soci_index_generator_lambda.zip.sha256
