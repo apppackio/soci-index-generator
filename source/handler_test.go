@@ -1,3 +1,4 @@
+// Modified by AppPack from the upstream original (see NOTICE.txt).
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
@@ -21,8 +22,8 @@ import (
 // DOCKER_IMAGE_DIGEST: the digest of your image.
 // OCI_IMAGE_DIGEST: the digest of your OCI image.
 func TestHandlerHappyPath(t *testing.T) {
-	// Test with both V1 and V2 SOCI index versions
-	testVersions := []string{"V1", "V2"}
+	// Only SOCI v2 is supported (see resolveIndexVersion in handler.go)
+	testVersions := []string{"V2"}
 
 	for _, version := range testVersions {
 		t.Run("SOCI Index Version "+version, func(t *testing.T) {
@@ -81,8 +82,8 @@ func TestHandlerHappyPath(t *testing.T) {
 // REPOSITORY_NAME: name of your private ECR repository.
 // INVALID_IMAGE_DIGEST: the digest of anything that isn't an image.
 func TestHandlerInvalidDigestMediaType(t *testing.T) {
-	// Test with both V1 and V2 SOCI index versions
-	testVersions := []string{"V1", "V2"}
+	// Only SOCI v2 is supported (see resolveIndexVersion in handler.go)
+	testVersions := []string{"V2"}
 
 	for _, version := range testVersions {
 		t.Run("SOCI Index Version "+version, func(t *testing.T) {

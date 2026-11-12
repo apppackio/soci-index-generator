@@ -1,4 +1,4 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Added by AppPack (see NOTICE.txt); not part of the upstream source.
 // SPDX-License-Identifier: Apache-2.0
 
 package registry
@@ -70,4 +70,24 @@ func tagAll(ctx context.Context, t tagger, desc ocispec.Descriptor, sourceDigest
 		}
 	}
 	return nil
+}
+
+// anyTagResolvesTo reports whether at least one tag currently resolves to
+// sourceDigest. It uses the same tagger seam and the same not-found handling as
+// tagAll. An error other than not-found is returned: the caller cannot tell
+// whether the tags still point at the source, so it must not guess.
+func anyTagResolvesTo(ctx context.Context, t tagger, sourceDigest string, tags []string) (bool, error) {
+	for _, tag := range tags {
+		current, err := t.Resolve(ctx, tag)
+		if errors.Is(err, errdef.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("failed to resolve tag %q: %w", tag, err)
+		}
+		if current.Digest.String() == sourceDigest {
+			return true, nil
+		}
+	}
+	return false, nil
 }

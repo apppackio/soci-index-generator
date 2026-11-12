@@ -1,4 +1,4 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Added by AppPack (see NOTICE.txt); not part of the upstream source.
 // SPDX-License-Identifier: Apache-2.0
 
 package registry
@@ -140,5 +140,29 @@ func TestTagAllResolveFailureNamesTag(t *testing.T) {
 	}
 	if len(f.tagged) != 0 {
 		t.Fatalf("tagged %v, want none", f.tagged)
+	}
+}
+
+func TestAnyTagResolvesToTrueWhenOneTagStillOnSource(t *testing.T) {
+	f := &fakeTagger{tags: map[string]string{"abc": "sha256:bbbb", "latest": srcDigest}}
+	ok, err := anyTagResolvesTo(testCtx(), f, srcDigest, []string{"abc", "latest"})
+	if err != nil || !ok {
+		t.Fatalf("got (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+func TestAnyTagResolvesToFalseWhenEveryTagMovedOnOrGone(t *testing.T) {
+	f := &fakeTagger{tags: map[string]string{"abc": "sha256:bbbb"}}
+	ok, err := anyTagResolvesTo(testCtx(), f, srcDigest, []string{"abc", "deleted"})
+	if err != nil || ok {
+		t.Fatalf("got (%v, %v), want (false, nil)", ok, err)
+	}
+}
+
+func TestAnyTagResolvesToReturnsResolveErrorNamingTag(t *testing.T) {
+	f := &fakeTagger{resolveErr: map[string]error{"abc": errors.New("throttled")}}
+	ok, err := anyTagResolvesTo(testCtx(), f, srcDigest, []string{"abc"})
+	if err == nil || ok || !strings.Contains(err.Error(), `"abc"`) {
+		t.Fatalf("got (%v, %v), want (false, error naming abc)", ok, err)
 	}
 }

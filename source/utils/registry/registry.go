@@ -113,6 +113,16 @@ func (registry *Registry) Push(ctx context.Context, sociStore *store.SociStore, 
 	return tagAll(ctx, repo, indexDesc, sourceDigest, tags)
 }
 
+// AnyTagResolvesTo reports whether any of the tags in the repository currently
+// points at sourceDigest. See anyTagResolvesTo.
+func (registry *Registry) AnyTagResolvesTo(ctx context.Context, repositoryName string, sourceDigest string, tags []string) (bool, error) {
+	repo, err := registry.registry.Repository(ctx, repositoryName)
+	if err != nil {
+		return false, err
+	}
+	return anyTagResolvesTo(ctx, repo, sourceDigest, tags)
+}
+
 // Call registry's headManifest and return the manifest's descriptor
 func (registry *Registry) HeadManifest(ctx context.Context, repositoryName string, reference string) (ocispec.Descriptor, error) {
 	repo, err := registry.registry.Repository(ctx, repositoryName)

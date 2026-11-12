@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -53,6 +54,8 @@ const (
 	DescribeFailedMessage        = "ECR DescribeImages error"
 	ImageGoneMessage             = "Skipping image: no longer present in the repository"
 	ValidationFailedMessage      = "ECRImageActionEvent validation error"
+	InvalidIndexVersionMessage   = "Invalid soci_index_version configuration"
+	NoTagsResolveMessage         = "Skipping image: no candidate tag still points at this image"
 	OversizedMessage             = "Skipping image: compressed size exceeds the conversion ceiling"
 
 	// Reasons for failures that do not pass through lambdaError.
@@ -149,6 +152,10 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	defer func() {
 		if r := recover(); r != nil {
 			inv.finish(metrics.OutcomeFailure, PanicReason, fmt.Errorf("%v", r))
+			// Re-panicking replaces the stack with this site; keep the original.
+			// Plain stderr, not log.Error: the logger needs a Lambda context and a
+			// failure here would mask the panic being reported.
+			fmt.Fprintf(os.Stderr, "panic: %v\n%s\n", r, debug.Stack())
 			panic(r)
 		}
 	}()
@@ -158,8 +165,10 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 		return inv.fail(ctx, ValidationFailedMessage, err)
 	}
 
-	// Get the SOCI index version from environment variable
-	sociIndexVersion := os.Getenv(SociIndexVersion)
+	sociIndexVersion, err := resolveIndexVersion(os.Getenv(SociIndexVersion))
+	if err != nil {
+		return inv.fail(ctx, InvalidIndexVersionMessage, err)
+	}
 	log.Info(ctx, fmt.Sprintf("Using SOCI index version: %s", sociIndexVersion))
 
 	repo := event.Detail.RepositoryName
@@ -174,6 +183,12 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 
 	// Loop guard: moving tags onto a converted index raises new PUSH events that
 	// must not re-enter conversion. Cheapest and most dangerous check, so first.
+	//
+	// LOAD-BEARING ORDER: this call must stay here, before DescribeImage and long
+	// before Pull. NO TEST ENFORCES THIS. shouldSkipConversion is unit tested, but
+	// nothing fails if the handler stops calling IsConverted or someone moves it
+	// below Pull. The only regression net is live question Q5 in verify/RESULTS.md.
+	// If you touch this prologue, re-run Q5.
 	converted, err := registry.IsConverted(ctx, repo, digest)
 	if shouldSkipConversion(converted, err) {
 		if err != nil {
@@ -212,20 +227,29 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 		return inv.skip("manifest-validation", "Exited early due to manifest validation error")
 	}
 
-	// For V2, only convert images that have a tag, and move those tags onto the new index
-	var tags []string
-	if sociIndexVersion == "V2" {
-		// Get the original image tag if available
-		originalTag, ok := ctx.Value(ImageTagKey).(string)
-		if !ok || originalTag == "" {
-			log.Info(ctx, "Skipping SOCI index generation for V2 as image has no tag")
-			return inv.skip("no-tag", "Skipped SOCI index generation for V2 as image has no tag")
-		}
+	// Only convert images that have a tag, and move those tags onto the new index.
+	originalTag, ok := ctx.Value(ImageTagKey).(string)
+	if !ok || originalTag == "" {
+		log.Info(ctx, "Skipping SOCI index generation as image has no tag")
+		return inv.skip("no-tag", "Skipped SOCI index generation as image has no tag")
+	}
 
-		// The converted index takes over every tag on the source digest, so
-		// workloads deploying {repo}:{tag} get lazy loading.
-		tags = registryutils.TagsToMove(originalTag, info.Tags)
-		log.Info(ctx, fmt.Sprintf("Moving tags onto the converted index: %v", tags))
+	// The converted index takes over every tag on the source digest, so
+	// workloads deploying {repo}:{tag} get lazy loading.
+	tags := registryutils.TagsToMove(originalTag, info.Tags)
+	log.Info(ctx, fmt.Sprintf("Candidate tags to move onto the converted index: %v", tags))
+
+	// Resolve before spending minutes of zTOC work. If no candidate still points
+	// at this digest (duplicate delivery, late retry, a newer build took the
+	// tag), the converted index would be pushed untagged and nothing would ever
+	// reference it, pinning its layers until the lifecycle rule reaps it.
+	anyResolves, err := registry.AnyTagResolvesTo(ctx, repo, digest, tags)
+	if err != nil {
+		return inv.fail(ctx, "Tag resolution error", err)
+	}
+	if !anyResolves {
+		log.Info(ctx, NoTagsResolveMessage)
+		return inv.skip("no-tags-resolve", NoTagsResolveMessage)
 	}
 
 	// Directory in lambda storage to store images and SOCI artifacts
@@ -235,8 +259,10 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	}
 	defer cleanUp(ctx, dataDir)
 
-	// The channel to signal the deadline monitor goroutine to exit early
-	quitChannel := make(chan int)
+	// The channel to signal the deadline monitor goroutine to exit early.
+	// Buffered so the deferred send never blocks when that goroutine has already
+	// returned on timeout (a blocked defer would also stop cleanUp from running).
+	quitChannel := make(chan int, 1)
 	defer func() {
 		quitChannel <- 1
 	}()
@@ -277,6 +303,18 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	log.Info(ctx, BuildAndPushSuccessMessage)
 	inv.finish(metrics.OutcomeSuccess, "", nil)
 	return BuildAndPushSuccessMessage, nil
+}
+
+// resolveIndexVersion enforces SOCI v2, the only version this function supports
+// (new Fargate customers cannot use v1). Unset means V2. Anything else is a
+// configuration error and fails the invocation: a silent fallback to the V1 path
+// would push untagged indexes Fargate ignores while the metric said success.
+func resolveIndexVersion(raw string) (string, error) {
+	switch raw {
+	case "", "V2":
+		return "V2", nil
+	}
+	return "", fmt.Errorf("%s must be unset or exactly %q, got %q: only SOCI v2 is supported", SociIndexVersion, "V2", raw)
 }
 
 // shouldSkipConversion reports whether to leave the image alone.
