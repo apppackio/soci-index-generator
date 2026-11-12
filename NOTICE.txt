@@ -1,2 +1,33 @@
 cfn-ecr-aws-soci-index-builder
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. 
+
+----------------------------------------------------------------------
+Modifications by AppPack (Apache License 2.0, section 4(b))
+
+This repository is derived from awslabs/cfn-ecr-aws-soci-index-builder at
+commit 461a3f9e17810b9f80d6b293b5101003ff66d7fb
+(functions/source/soci-index-generator-lambda/). The following files
+differ from that source. Paths are relative to source/ in this repository.
+
+Modified:
+  Dockerfile
+  Makefile
+  handler.go
+  utils/registry/registry.go
+
+Added:
+  handler_guard_test.go
+  handler_metrics_test.go
+  utils/metrics/
+  utils/registry/soci.go
+  utils/registry/soci_test.go
+  utils/registry/describe.go
+  utils/registry/describe_test.go
+  utils/registry/tags.go
+  utils/registry/tags_test.go
+
+Removed: none. vendor/ is byte-identical to upstream.
+
+Files outside source/ (README.md, docs/, .github/, renovate.json, the
+top-level Makefile, REGIONS.txt) were added by AppPack and are not part of
+upstream's function source.
