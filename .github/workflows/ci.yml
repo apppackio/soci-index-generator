@@ -13,26 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Everything runs in the pinned builder container; the runner needs only
       # Docker, so there is deliberately no setup-go here.
       - name: Test
         run: make test
       - name: Build
         run: make build
-      # A non-reproducible build breaks the audit chain silently, so it is a
-      # failed build. Hash the first build, then build again with --no-cache:
-      # the Dockerfile compiles at image build time, so a cached rebuild would
-      # return the same zip and compare it to itself. Compare the zip and the
-      # bootstrap binary (the stronger signal; zip framing depends on unpinned
-      # apk packages).
+      # Double-build comparison; see the repro-check target in the Makefile.
       - name: Check build is reproducible
-        run: |
-          make checksums
-          cp dist/soci_index_generator_lambda.zip.sha256 first-zip.sha256
-          cp dist/bootstrap.sha256 first-bootstrap.sha256
-          rm -rf dist
-          make build BUILD_FLAGS=--no-cache
-          make checksums
-          cat first-zip.sha256 dist/soci_index_generator_lambda.zip.sha256 first-bootstrap.sha256 dist/bootstrap.sha256
-          cmp first-bootstrap.sha256 dist/bootstrap.sha256
-          cmp first-zip.sha256 dist/soci_index_generator_lambda.zip.sha256
+        run: make repro-check

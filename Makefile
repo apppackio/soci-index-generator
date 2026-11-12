@@ -50,13 +50,35 @@ publish:
 	printf '%s' "$$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$$' || { echo "VERSION must be a release tag like v1.2.3 (got '$$VERSION')" >&2; exit 1; }
 	test -f "$(ZIP)" -a -f "$(ZIP).sha256" || { echo "$(ZIP) or its .sha256 missing: run 'make build checksums' first" >&2; exit 1; }
 	cd dist && sha256sum -c soci_index_generator_lambda.zip.sha256
+	test -s "$(CURDIR)/REGIONS.txt" -a -n "$(strip $(REGIONS))" || { echo "REGIONS.txt is missing or empty: refusing to publish to zero regions" >&2; exit 1; }
+	count=0; \
 	for region in $(REGIONS); do \
 	    aws s3 cp "$(ZIP)" \
 	      "s3://apppack-lambdas-$$region/soci-index-generator/$$VERSION/soci_index_generator_lambda.zip" \
 	      --only-show-errors || exit 1; \
-	done
+	    count=$$((count + 1)); \
+	done; \
+	test "$$count" -eq "$(words $(REGIONS))" || { echo "uploaded to $$count of $(words $(REGIONS)) regions" >&2; exit 1; }; \
+	echo "uploaded to $$count regions"
+
+# A non-reproducible build breaks the audit chain silently, so it is a failed
+# build. Needs a finished `make build`. Hashes that build, rebuilds from scratch
+# with --no-cache (the Dockerfile compiles at image build time, so a cached
+# rebuild would return the same zip and compare it to itself), and compares the
+# zip and the bootstrap binary (the stronger signal; zip framing depends on
+# unpinned apk packages). Leaves the second build's dist/ and checksums in place.
+repro-check:
+	$(MAKE) checksums
+	first="$$(mktemp -d)" && \
+	cp dist/soci_index_generator_lambda.zip.sha256 dist/bootstrap.sha256 "$$first/" && \
+	$(MAKE) clean && \
+	$(MAKE) build BUILD_FLAGS=--no-cache && \
+	$(MAKE) checksums && \
+	cat "$$first/soci_index_generator_lambda.zip.sha256" dist/soci_index_generator_lambda.zip.sha256 "$$first/bootstrap.sha256" dist/bootstrap.sha256 && \
+	cmp "$$first/bootstrap.sha256" dist/bootstrap.sha256 && \
+	cmp "$$first/soci_index_generator_lambda.zip.sha256" dist/soci_index_generator_lambda.zip.sha256
 
 clean:
 	rm -rf dist
 
-.PHONY: image build test checksums publish clean
+.PHONY: image build test checksums repro-check publish clean

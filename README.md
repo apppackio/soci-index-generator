@@ -69,10 +69,15 @@ make checksums   # dist/*.sha256 for the zip and the bootstrap binary
     flag and nothing broader.
 - CI (`.github/workflows/ci.yml`) tests, builds, then rebuilds with
   `--no-cache` and fails if the zip or binary hash differs.
-- **Releasing:** push a tag `vX.Y.Z`. The release workflow builds, creates the
-  GitHub release (zip plus both checksum files), then uploads the zip to
+- **Releasing:** push a tag `vX.Y.Z` on a commit that is already on `main`. The
+  release workflow refuses any other commit, runs the tests, builds, checks the
+  build is reproducible, creates the GitHub release (zip plus both checksum
+  files) as a pre-release, uploads the zip to
   `s3://apppack-lambdas-<region>/soci-index-generator/<tag>/` for each region in
-  `REGIONS.txt`. **Published tags are never deleted or re-pointed**; see
+  `REGIONS.txt` (failing unless every region succeeded), and only then clears
+  the pre-release flag. A release still marked "Pre-release" is an incomplete
+  publish. The workflow is safe to re-run: it finishes the fan-out rather than
+  needing the release deleted. **Published tags are never deleted or re-pointed**; see
   [docs/verifying.md](docs/verifying.md#releases-are-immutable-by-policy).
 
 ## Repository setup
@@ -89,6 +94,10 @@ none of them is enforced by this repo's files:
   then passes vacuously or blocks forever.
 - **The repo setting "Allow auto-merge" is enabled.** Otherwise
   `platformAutomerge` does nothing.
+- **Release safety (also not enforced by files):** protect `v*` tags so only
+  maintainers can create them, and consider a GitHub Environment with a
+  required reviewer for the `publish` job. If you add one, the AWS role's OIDC
+  trust policy must accept the environment-scoped `sub` claim.
 - **After the first Renovate run**, confirm `go mod vendor` under the `1.26`
   constraint produces **no diff** against the committed `source/vendor/`. A
   diff is exactly the toolchain skew the constraint exists to prevent.

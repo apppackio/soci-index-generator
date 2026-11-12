@@ -5,37 +5,112 @@ on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: write # gh release create
-  id-token: write # OIDC for configure-aws-credentials
+# No workflow-level grants: each job declares exactly what it needs.
+permissions: {}
 
 jobs:
-  release:
+  # Runs repo-controlled code (Makefile, Dockerfile) from the tagged commit, so
+  # it gets a read-only token and no OIDC. It also gates the release: nothing
+  # downstream runs unless the tag is on main, the tests pass, and the build is
+  # reproducible. (ci.yml also fires on the tag push but does not gate this.)
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full history, so the ancestry check below is real
+          persist-credentials: false
+      # The tag becomes the public audit anchor, so it must be a commit that
+      # went through main, not an arbitrary branch.
+      - name: Require the tagged commit to be on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not an ancestor of main; refusing to release"
+            exit 1
+          }
+      - name: Test
+        run: make test
       - name: Build
         run: make build
-      - name: Compute checksums
-        run: make checksums
-      # The GitHub release is the public audit anchor, so it is created before
-      # the artifact reaches any bucket a customer's Lambda reads. A customer
-      # must never find an artifact in S3 with no public counterpart.
-      - name: Create GitHub release
+      - name: Check build is reproducible
+        run: make repro-check
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # The GitHub release is the public audit anchor, so it exists before the
+  # artifact reaches any bucket a customer's Lambda reads. Needs a write token
+  # but runs no repo code: no checkout, only the verified artifact.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+      # Idempotent so a re-run can finish after a partial failure instead of
+      # needing the release deleted and the tag re-pushed (which the
+      # immutability policy forbids). It starts as a pre-release and is only
+      # promoted once every region has the zip, so a partial fan-out is visible
+      # on the release page.
+      - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
+            --prerelease \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             dist/soci_index_generator_lambda.zip \
             dist/soci_index_generator_lambda.zip.sha256 \
+            dist/bootstrap.sha256 \
+          || gh release upload "$GITHUB_REF_NAME" --clobber \
+            dist/soci_index_generator_lambda.zip \
+            dist/soci_index_generator_lambda.zip.sha256 \
             dist/bootstrap.sha256
+
+  # Holds the OIDC grant but no repo write access. `make publish` re-verifies
+  # the downloaded zip against its .sha256 before uploading anything.
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC for configure-aws-credentials
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::101287669015:role/soci-index-generator-github-actions
           aws-region: us-east-1
-      # `make publish` verifies dist/ against the released .sha256 itself.
       - name: Publish to regional buckets
         run: make publish VERSION="$GITHUB_REF_NAME"
+
+  # Only after every region has the zip does the release stop being a pre-release.
+  finalize:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Mark release complete
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$GITHUB_REF_NAME" --prerelease=false
