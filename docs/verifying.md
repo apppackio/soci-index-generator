@@ -12,8 +12,9 @@ the last step connects the artifact to source.
 ## What you need
 
 `aws` (with read access to your account), `gh`, `git`, `docker`, `sha256sum`,
-`cmp`, `unzip`, `base64` and `od`. Step 4 builds for `linux/amd64`; on an arm64 machine (Apple silicon,
-Graviton) Docker emulates, so expect it to take minutes, not seconds.
+`cmp`, `unzip`, `base64` and `od`. Step 4 builds for `linux/amd64`; on an
+arm64 machine (Apple silicon, Graviton) Docker emulates, so expect it to take
+minutes, not seconds.
 
 ## Step 1: ask Lambda what it is running
 
@@ -96,6 +97,9 @@ release and an S3 object can both hold an artifact nobody can reproduce.
 
 ## Step 4: rebuild from source and compare
 
+Run this from the `verify/` directory you created in step 2 (so that the
+clone lands in `verify/apppack-soci-index-generator/`, next to `release/`).
+
 ```bash
 git clone https://github.com/apppackio/apppack-soci-index-generator
 cd apppack-soci-index-generator
@@ -108,15 +112,15 @@ Compare your rebuild with the release's files:
 
 ```bash
 # the zip: ties the released zip to your rebuild (see the caveat below)
-cmp dist/soci_index_generator_lambda.zip ../verify/release/soci_index_generator_lambda.zip && echo "zip reproduces"
+cmp dist/soci_index_generator_lambda.zip ../release/soci_index_generator_lambda.zip && echo "zip reproduces"
 
 # the binary: your rebuild's bootstrap hash against the release's
-diff dist/bootstrap.sha256 ../verify/release/bootstrap.sha256 && echo "bootstrap reproduces"
+diff dist/bootstrap.sha256 ../release/bootstrap.sha256 && echo "bootstrap reproduces"
 
 # and bind the release's bootstrap.sha256 to the release's own zip. It names a
 # file inside the zip, not a loose file, so extract it first or `sha256sum -c`
 # reports "No such file"
-(cd ../verify/release && unzip -o soci_index_generator_lambda.zip bootstrap && sha256sum -c bootstrap.sha256)
+(cd ../release && unzip -o soci_index_generator_lambda.zip bootstrap && sha256sum -c bootstrap.sha256)
 ```
 
 What each does. The `diff` of `bootstrap.sha256` is the one comparison that
