@@ -44,6 +44,10 @@ const (
 	PushFailedMessage           = "SOCI index push error"
 	SkipPushOnEmptyIndexMessage = "Skipping pushing SOCI index as it does not contain any zTOCs"
 	BuildAndPushSuccessMessage  = "Successfully built and pushed SOCI index"
+	AlreadyConvertedMessage     = "Skipping image: already converted to a SOCI index"
+	DescribeFailedMessage       = "ECR DescribeImages error"
+	ImageGoneMessage            = "Skipping image: no longer present in the repository"
+	OversizedMessage            = "Skipping image: compressed size exceeds the conversion ceiling"
 
 	artifactsStoreName = "store"
 	artifactsDbName    = "artifacts.db"
@@ -79,6 +83,36 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	registry, err := registryutils.Init(ctx, registryUrl)
 	if err != nil {
 		return lambdaError(ctx, "Remote registry initialization error", err)
+	}
+
+	// Loop guard: moving tags onto a converted index raises new PUSH events that
+	// must not re-enter conversion. Cheapest and most dangerous check, so first.
+	converted, err := registry.IsConverted(ctx, repo, digest)
+	if err != nil {
+		log.Warn(ctx, fmt.Sprintf("Conversion check error: %v", err))
+	} else if converted {
+		log.Info(ctx, AlreadyConvertedMessage)
+		return AlreadyConvertedMessage, nil
+	}
+
+	// Size ceiling. Each skip returns a nil error so Lambda does not retry.
+	ecrClient, err := registryutils.NewEcrClient(ctx)
+	if err != nil {
+		return lambdaError(ctx, DescribeFailedMessage, err)
+	}
+	info, err := registryutils.DescribeImage(ctx, ecrClient, repo, digest)
+	if err != nil {
+		return lambdaError(ctx, DescribeFailedMessage, err)
+	}
+	if !info.Found {
+		return ImageGoneMessage, nil
+	}
+	if !info.SizeKnown {
+		log.Warn(ctx, "ECR did not report an image size, so the size ceiling was NOT enforced: the size guard did not run")
+	}
+	if info.Oversized() {
+		log.Warn(ctx, fmt.Sprintf("%s: %d bytes", OversizedMessage, info.SizeBytes))
+		return OversizedMessage, nil
 	}
 
 	err = registry.ValidateImageDigest(ctx, repo, digest, sociIndexVersion)

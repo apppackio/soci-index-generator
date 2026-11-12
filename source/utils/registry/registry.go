@@ -230,25 +230,27 @@ func isEcrRegistry(registryUrl string) bool {
 	return match
 }
 
+// newEcrClient loads the default AWS config and builds an ECR client.
+// Set ECR_ENDPOINT for a custom, i.e. non default, aws ecr endpoint.
+func newEcrClient(ctx context.Context) (*ecr.Client, error) {
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+	if ecrEndpoint := os.Getenv("ECR_ENDPOINT"); ecrEndpoint != "" {
+		return ecr.NewFromConfig(cfg, func(o *ecr.Options) {
+			o.BaseEndpoint = aws.String(ecrEndpoint)
+		}), nil
+	}
+	return ecr.NewFromConfig(cfg), nil
+}
+
 // Authorize ECR registry
 func authorizeEcr(ecrRegistry *remote.Registry) error {
 	ctx := context.Background()
-	var cfg aws.Config
-	var err error	
-	cfg, err = config.LoadDefaultConfig(ctx)
+	ecrClient, err := newEcrClient(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to load AWS config: %w", err)
-	}
-
-	ecrEndpoint := os.Getenv("ECR_ENDPOINT") // set this env var for custom, i.e. non default, aws ecr endpoint
-
-	var ecrClient *ecr.Client
-	if ecrEndpoint != "" {
-		ecrClient = ecr.NewFromConfig(cfg, func(o *ecr.Options) {
-			o.BaseEndpoint = aws.String(ecrEndpoint)
-		})
-	} else {
-		ecrClient = ecr.NewFromConfig(cfg)
+		return err
 	}
 
 	input := &ecr.GetAuthorizationTokenInput{}
