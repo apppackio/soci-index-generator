@@ -1,4 +1,4 @@
-# cyphar.com/go-pathrs v0.2.1 => github.com/cyphar/libpathrs/go-pathrs v0.2.1
+# cyphar.com/go-pathrs v0.2.1 => github.com/cyphar/libpathrs/go-pathrs v0.2.6
 ## explicit; go 1.18
 cyphar.com/go-pathrs
 cyphar.com/go-pathrs/internal/fdutils
@@ -623,4 +623,4 @@ oras.land/oras-go/v2/registry/remote/auth
 oras.land/oras-go/v2/registry/remote/errcode
 oras.land/oras-go/v2/registry/remote/internal/errutil
 oras.land/oras-go/v2/registry/remote/retry
-# cyphar.com/go-pathrs => github.com/cyphar/libpathrs/go-pathrs v0.2.1
+# cyphar.com/go-pathrs => github.com/cyphar/libpathrs/go-pathrs v0.2.6
