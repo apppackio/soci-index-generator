@@ -56,11 +56,17 @@ make checksums   # dist/*.sha256 for the zip and the bootstrap binary
 - Builds and tests use `--platform linux/amd64`, matching the Lambda. On an
   arm64 host (Apple silicon) Docker emulates it, so a local build takes
   minutes.
-- `CGO_LDFLAGS_ALLOW='-l:libz\.a'` in `source/Dockerfile` is deliberate. Go
-  1.26.11 (`golang:1.26-alpine`) rejects the vendored soci-snapshotter's `-l:libz.a` cgo flag with
-  `invalid flag in #cgo LDFLAGS` (reproduced against an untouched upstream copy). The
-  allowlist re-permits exactly that one flag and nothing broader; it is not a
-  general relaxation of cgo's flag checking.
+- `CGO_LDFLAGS_ALLOW='-l:libz\.a'` in `source/Dockerfile` is deliberate, not
+  a general relaxation of cgo's flag checking.
+  - `golang:1.26-alpine` (go1.26.11) rejects the vendored soci-snapshotter's
+    `-l:libz.a` cgo flag with `invalid flag in #cgo LDFLAGS`. Verified against
+    an untouched upstream copy.
+  - Pinning `golang:1.26.0-alpine` instead builds without the allowlist.
+    Verified.
+  - We chose the allowlist anyway: pinning an old patch release freezes a
+    customer-facing artifact off Go security fixes, and Renovate would fight
+    the pin on every bump. The allowlist re-permits exactly that one known
+    flag and nothing broader.
 - CI (`.github/workflows/ci.yml`) tests, builds, then rebuilds with
   `--no-cache` and fails if the zip or binary hash differs.
 - **Releasing:** push a tag `vX.Y.Z`. The release workflow builds, creates the
