@@ -86,4 +86,4 @@ require (
 	google.golang.org/protobuf v1.36.10 // indirect
 )
 
-replace cyphar.com/go-pathrs => github.com/cyphar/libpathrs/go-pathrs v0.2.1
+replace cyphar.com/go-pathrs => github.com/cyphar/libpathrs/go-pathrs v0.2.6
