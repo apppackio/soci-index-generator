@@ -39,15 +39,16 @@ var (
 )
 
 const (
-	BuildFailedMessage          = "SOCI index build error"
-	TagFailedMessage            = "SOCI V2 OCI Image tag error"
-	PushFailedMessage           = "SOCI index push error"
-	SkipPushOnEmptyIndexMessage = "Skipping pushing SOCI index as it does not contain any zTOCs"
-	BuildAndPushSuccessMessage  = "Successfully built and pushed SOCI index"
-	AlreadyConvertedMessage     = "Skipping image: already converted to a SOCI index"
-	DescribeFailedMessage       = "ECR DescribeImages error"
-	ImageGoneMessage            = "Skipping image: no longer present in the repository"
-	OversizedMessage            = "Skipping image: compressed size exceeds the conversion ceiling"
+	BuildFailedMessage           = "SOCI index build error"
+	TagFailedMessage             = "SOCI V2 OCI Image tag error"
+	PushFailedMessage            = "SOCI index push error"
+	SkipPushOnEmptyIndexMessage  = "Skipping pushing SOCI index as it does not contain any zTOCs"
+	BuildAndPushSuccessMessage   = "Successfully built and pushed SOCI index"
+	AlreadyConvertedMessage      = "Skipping image: already converted to a SOCI index"
+	ConversionCheckFailedMessage = "Skipping image: conversion check failed, image left unconverted"
+	DescribeFailedMessage        = "ECR DescribeImages error"
+	ImageGoneMessage             = "Skipping image: no longer present in the repository"
+	OversizedMessage             = "Skipping image: compressed size exceeds the conversion ceiling"
 
 	artifactsStoreName = "store"
 	artifactsDbName    = "artifacts.db"
@@ -88,9 +89,11 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	// Loop guard: moving tags onto a converted index raises new PUSH events that
 	// must not re-enter conversion. Cheapest and most dangerous check, so first.
 	converted, err := registry.IsConverted(ctx, repo, digest)
-	if err != nil {
-		log.Warn(ctx, fmt.Sprintf("Conversion check error: %v", err))
-	} else if converted {
+	if shouldSkipConversion(converted, err) {
+		if err != nil {
+			log.Warn(ctx, fmt.Sprintf("%s: %v", ConversionCheckFailedMessage, err))
+			return ConversionCheckFailedMessage, nil
+		}
 		log.Info(ctx, AlreadyConvertedMessage)
 		return AlreadyConvertedMessage, nil
 	}
@@ -184,6 +187,16 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 
 	log.Info(ctx, BuildAndPushSuccessMessage)
 	return BuildAndPushSuccessMessage, nil
+}
+
+// shouldSkipConversion reports whether to leave the image alone.
+// It fails closed: a failed check skips. If a persistent registry error (missing
+// IAM permission, throttling, outage) let conversion proceed, we would convert an
+// already-converted index, move its tags, and raise fresh PUSH events that error
+// the same way: an unbounded loop against ECR in a customer's account. Skipping
+// costs one image its lazy loading; looping is a billing incident.
+func shouldSkipConversion(converted bool, checkErr error) bool {
+	return checkErr != nil || converted
 }
 
 // Validate the given event, populating the context with relevant valid event properties
