@@ -1,0 +1,32 @@
+---
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Everything runs in the pinned builder container; the runner needs only
+      # Docker, so there is deliberately no setup-go here.
+      - name: Test
+        run: make test
+      - name: Build
+        run: make build
+      # A non-reproducible build breaks the audit chain silently, so it is a
+      # failed build: build the same commit again and compare.
+      - name: Check build is reproducible
+        run: |
+          first=$(sha256sum dist/soci_index_generator_lambda.zip | cut -d' ' -f1)
+          rm -rf dist
+          make build
+          second=$(sha256sum dist/soci_index_generator_lambda.zip | cut -d' ' -f1)
+          echo "first:  $first"
+          echo "second: $second"
+          test "$first" = "$second"

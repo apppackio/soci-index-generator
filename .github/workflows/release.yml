@@ -1,0 +1,44 @@
+---
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # gh release create
+  id-token: write # OIDC for configure-aws-credentials
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build
+        run: make build
+      - name: Compute checksums
+        run: make checksums
+      # The GitHub release is the public audit anchor, so it is created before
+      # the artifact reaches any bucket a customer's Lambda reads. A customer
+      # must never find an artifact in S3 with no public counterpart.
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/soci_index_generator_lambda.zip \
+            dist/soci_index_generator_lambda.zip.sha256 \
+            dist/bootstrap.sha256
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::101287669015:role/soci-index-generator-github-actions
+          aws-region: us-east-1
+      # Publish uploads the zip that was just released, not a rebuild. Confirm
+      # it still matches the hash attached to the release before it goes out.
+      - name: Verify artifact matches release
+        run: cd dist && sha256sum -c soci_index_generator_lambda.zip.sha256
+      - name: Publish to regional buckets
+        run: make publish VERSION="$GITHUB_REF_NAME"
