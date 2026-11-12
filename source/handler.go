@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"errors"
@@ -53,6 +54,10 @@ const (
 	ValidationFailedMessage      = "ECRImageActionEvent validation error"
 	OversizedMessage             = "Skipping image: compressed size exceeds the conversion ceiling"
 
+	// Reasons for failures that do not pass through lambdaError.
+	TimeoutReason = "invocation-timeout"
+	PanicReason   = "panic"
+
 	artifactsStoreName = "store"
 	artifactsDbName    = "artifacts.db"
 )
@@ -80,9 +85,22 @@ type invocation struct {
 	// sizeGuardSkipped records that ECR reported no image size, so the size
 	// ceiling did not run. It rides on whatever metric this invocation emits.
 	sizeGuardSkipped bool
+	// emitted makes the first finish win, so a timeout or panic that follows an
+	// already-reported exit cannot count the same invocation twice.
+	emitted atomic.Bool
 }
 
+// newInvocation never lets App be empty: CloudWatch silently drops an EMF
+// document whose dimension value is an empty string, so a missing APP_NAME would
+// discard every metric with no error anywhere. Each AppPack app owns exactly one
+// ECR repository, so the repository name identifies it just as well.
 func newInvocation(out io.Writer, app, repository, digest string) *invocation {
+	if app == "" {
+		app = repository
+	}
+	if app == "" {
+		app = "unknown"
+	}
 	return &invocation{out: out, app: app, start: time.Now(), repository: repository, digest: digest}
 }
 
@@ -93,6 +111,9 @@ func newInvocation(out io.Writer, app, repository, digest string) *invocation {
 // reason must be a bounded, stable value (a message constant) so outcomes
 // aggregate; the unbounded raw error text goes in the separate error property.
 func (inv *invocation) finish(outcome, reason string, err error) {
+	if !inv.emitted.CompareAndSwap(false, true) {
+		return
+	}
 	props := map[string]string{"repository": inv.repository, "digest": inv.digest}
 	if reason != "" {
 		props["reason"] = reason
@@ -121,6 +142,15 @@ func (inv *invocation) fail(ctx context.Context, msg string, err error) (string,
 
 func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (string, error) {
 	inv := newInvocation(os.Stdout, os.Getenv("APP_NAME"), event.Detail.RepositoryName, event.Detail.ImageDigest)
+
+	// A panic unwinds past every exit path below. Report it, then re-panic:
+	// swallowing it would turn a crash into a silent success.
+	defer func() {
+		if r := recover(); r != nil {
+			inv.finish(metrics.OutcomeFailure, PanicReason, fmt.Errorf("%v", r))
+			panic(r)
+		}
+	}()
 
 	ctx, err := validateEvent(ctx, event)
 	if err != nil {
@@ -210,7 +240,7 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 		quitChannel <- 1
 	}()
 
-	setDeadline(ctx, quitChannel, dataDir)
+	setDeadline(ctx, quitChannel, dataDir, inv)
 
 	sociStore, err := initSociStore(ctx, dataDir)
 	if err != nil {
@@ -370,7 +400,7 @@ func cleanUp(ctx context.Context, dataDir string) {
 // want to keep data in storage when the Lambda reaches its invocation timeout.
 // This function creates a goroutine that will do cleanup when the invocation timeout is near.
 // quitChannel is used for signaling that goroutine when the invocation ends naturally.
-func setDeadline(ctx context.Context, quitChannel chan int, dataDir string) {
+func setDeadline(ctx context.Context, quitChannel chan int, dataDir string, inv *invocation) {
 	// setting deadline as 10 seconds before lambda timeout.
 	// reference: https://docs.aws.amazon.com/lambda/latest/dg/golang-context.html
 	deadline, _ := ctx.Deadline()
@@ -381,7 +411,9 @@ func setDeadline(ctx context.Context, quitChannel chan int, dataDir string) {
 			select {
 			case <-timeoutChannel:
 				cleanUp(ctx, dataDir)
-				log.Error(ctx, "Invocation timeout error", fmt.Errorf("invocation timeout after 14 minutes and 50 seconds"))
+				timeoutErr := fmt.Errorf("invocation timeout after 14 minutes and 50 seconds")
+				inv.finish(metrics.OutcomeFailure, TimeoutReason, timeoutErr)
+				log.Error(ctx, "Invocation timeout error", timeoutErr)
 				return
 			case <-quitChannel:
 				return

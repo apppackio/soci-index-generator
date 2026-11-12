@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
+
+	"github.com/aws/aws-lambda-go/lambdacontext"
 )
 
 func lastDoc(t *testing.T, buf *bytes.Buffer) map[string]interface{} {
@@ -74,5 +77,75 @@ func TestInvocationOmitsErrorWhenNil(t *testing.T) {
 	inv.finish("skipped", "no-tag", nil)
 	if _, ok := lastDoc(t, &buf)["error"]; ok {
 		t.Error("error property must be absent without an error")
+	}
+}
+
+func TestNewInvocationNeverEmitsEmptyApp(t *testing.T) {
+	cases := []struct{ app, repo, want string }{
+		{"my-app", "repo", "my-app"},
+		{"", "repo", "repo"}, // APP_NAME missing: fall back to the repository
+		{"", "", "unknown"},  // validation failure with no repository at all
+	}
+	for _, c := range cases {
+		var buf bytes.Buffer
+		newInvocation(&buf, c.app, c.repo, "sha256:abc").finish("success", "", nil)
+		if got := lastDoc(t, &buf)["App"]; got != c.want {
+			t.Errorf("app=%q repo=%q: App = %v, want %q", c.app, c.repo, got, c.want)
+		}
+	}
+}
+
+func TestInvocationEmitsOnlyOnce(t *testing.T) {
+	var buf bytes.Buffer
+	inv := newInvocation(&buf, "app", "repo", "sha256:abc")
+	inv.finish("success", "", nil)
+	inv.finish("failure", PanicReason, nil)
+	if n := bytes.Count(buf.Bytes(), []byte("\n")); n != 1 {
+		t.Errorf("want exactly one metric line, got %d", n)
+	}
+	if lastDoc(t, &buf)["Outcome"] != "success" {
+		t.Errorf("the first outcome must win")
+	}
+}
+
+// skip and fail are what keep the emitted outcome and the returned error from
+// drifting apart: skip must emit skipped with a nil error, fail must emit
+// failure with the error returned.
+func TestSkipAndFailPinOutcomeToReturnedError(t *testing.T) {
+	ctx := lambdacontext.NewContext(context.Background(), &lambdacontext.LambdaContext{AwsRequestID: "req"})
+	boom := errors.New("boom")
+	cases := []struct {
+		name        string
+		call        func(inv *invocation) (string, error)
+		wantOutcome string
+		wantReason  string
+		wantMsg     string
+		wantErr     bool
+	}{
+		{"skip", func(inv *invocation) (string, error) { return inv.skip("no-tag", "msg") }, "skipped", "no-tag", "msg", false},
+		{"skip with a failure-sounding message", func(inv *invocation) (string, error) {
+			return inv.skip("oversized", OversizedMessage)
+		}, "skipped", "oversized", OversizedMessage, false},
+		{"fail", func(inv *invocation) (string, error) { return inv.fail(ctx, PushFailedMessage, boom) }, "failure", PushFailedMessage, PushFailedMessage, true},
+		{"fail on validation", func(inv *invocation) (string, error) { return inv.fail(ctx, ValidationFailedMessage, boom) }, "failure", ValidationFailedMessage, ValidationFailedMessage, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			msg, err := c.call(newInvocation(&buf, "app", "repo", "sha256:abc"))
+			if (err != nil) != c.wantErr {
+				t.Errorf("returned error = %v, want non-nil: %v", err, c.wantErr)
+			}
+			if c.wantErr && err != boom {
+				t.Errorf("fail must return the original error, got %v", err)
+			}
+			if msg != c.wantMsg {
+				t.Errorf("message = %q, want %q", msg, c.wantMsg)
+			}
+			doc := lastDoc(t, &buf)
+			if doc["Outcome"] != c.wantOutcome || doc["reason"] != c.wantReason {
+				t.Errorf("emitted %v / %v, want %s / %s", doc["Outcome"], doc["reason"], c.wantOutcome, c.wantReason)
+			}
+		})
 	}
 }
