@@ -19,8 +19,8 @@
 # guard, and do not tighten the guard to match this script (the guard would then
 # let a converted index back into conversion, which is the loop).
 #
-# Exit codes: 0 pass; 1 verdict is "no"; 2 usage error, unresolved tag, or
-# unparseable response.
+# Exit codes: 0 pass; 1 verdict is "no"; 2 usage error, unresolved tag,
+# unparseable response, or a manifest that is valid JSON but not an object.
 set -uo pipefail
 
 WANT_INDEX="application/vnd.oci.image.index.v1+json"

@@ -42,6 +42,9 @@ jobs:
           name: dist
           path: dist/
           if-no-files-found: error
+          # A plain "Re-run all jobs" rebuilds dist/ and would otherwise fail
+          # here because an artifact with this name already exists in the run.
+          overwrite: true
 
   # The GitHub release is the public audit anchor, so it exists before the
   # artifact reaches any bucket a customer's Lambda reads. Needs a write token
@@ -56,28 +59,82 @@ jobs:
         with:
           name: dist
           path: dist
-      # Idempotent so a re-run can finish after a partial failure instead of
-      # needing the release deleted and the tag re-pushed (which the
-      # immutability policy forbids). It starts as a pre-release and is only
-      # promoted once every region has the zip, so a partial fan-out is visible
-      # on the release page.
-      - name: Create or update GitHub release
+      # Decides what to do from the release's state, before anything is
+      # uploaded and before `publish` can touch S3:
+      #
+      #   no release            -> create it as a pre-release
+      #   exists, pre-release   -> an interrupted publish; resume it
+      #   exists, complete      -> refuse; the tag is already published
+      #
+      # A completed release must never be re-pointed: re-running the workflow
+      # rebuilds from unpinned apk packages, so the bytes can legitimately
+      # differ from the published ones. Uploading them with --clobber and then
+      # running `make publish` would silently change what a published tag means.
+      # Only a pre-release (never promoted, visible as incomplete) is resumable.
+      # Anything ambiguous about whether the release exists fails closed.
+      - name: Create or resume GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --verify-tag \
-            --prerelease \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            dist/soci_index_generator_lambda.zip \
-            dist/soci_index_generator_lambda.zip.sha256 \
-            dist/bootstrap.sha256 \
-          || gh release upload "$GITHUB_REF_NAME" --clobber \
-            dist/soci_index_generator_lambda.zip \
-            dist/soci_index_generator_lambda.zip.sha256 \
-            dist/bootstrap.sha256
+          set -uo pipefail
+
+          release_json="$(mktemp)"
+          release_err="$(mktemp)"
+          trap 'rm -f "$release_json" "$release_err"' EXIT
+
+          if gh release view "$GITHUB_REF_NAME" --json isPrerelease \
+              >"$release_json" 2>"$release_err"; then
+            # Plain -r, not -e: `jq -e` exits 1 for a legitimate `false`,
+            # which would send the completed-release case down the error path.
+            if ! is_prerelease="$(jq -r '.isPrerelease' "$release_json")"; then
+              echo "::error::gh release view returned unparseable JSON; refusing to continue"
+              exit 1
+            fi
+
+            case "$is_prerelease" in
+              true)
+                echo "Release $GITHUB_REF_NAME is a pre-release: resuming the interrupted publish."
+                gh release upload "$GITHUB_REF_NAME" --clobber \
+                  dist/soci_index_generator_lambda.zip \
+                  dist/soci_index_generator_lambda.zip.sha256 \
+                  dist/bootstrap.sha256
+                exit 0
+                ;;
+              false)
+                echo "::error title=Release already published::Tag $GITHUB_REF_NAME is a completed release. Re-publishing it would change the bytes under an already-published key, so nothing was uploaded and S3 was not touched. To ship a fix, create a new tag."
+                exit 1
+                ;;
+              *)
+                echo "::error::gh release view returned no boolean isPrerelease; refusing to continue"
+                exit 1
+                ;;
+            esac
+          else
+            status=$?
+          fi
+
+          # `gh release view` reports a missing release as exit 1 with
+          # "release not found". Match that exact phrase: a permissions or
+          # network failure can also mention "not found" (e.g. a repository
+          # error), and treating one of those as "no release" would fall
+          # through to `gh release create`.
+          if [ "$status" -eq 1 ] && grep -Fq 'release not found' "$release_err"; then
+            echo "Release $GITHUB_REF_NAME does not exist: creating it as a pre-release."
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --prerelease \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              dist/soci_index_generator_lambda.zip \
+              dist/soci_index_generator_lambda.zip.sha256 \
+              dist/bootstrap.sha256
+            exit 0
+          fi
+
+          echo "::error::Could not determine whether release $GITHUB_REF_NAME exists (gh exit $status); refusing to create or upload anything."
+          cat "$release_err" >&2
+          exit 1
 
   # Holds the OIDC grant but no repo write access. `make publish` re-verifies
   # the downloaded zip against its .sha256 before uploading anything.

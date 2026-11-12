@@ -191,13 +191,24 @@ only meaningful if a tag always means the same bytes, so:
 **Published tags are never deleted and never re-pointed.** A fix ships as a
 new tag.
 
-This is a policy, not a technical guarantee. The release workflow makes the
-common accident fail (`gh release create` refuses to create a release that
-already exists, and the workflow does that before it touches S3). But a
-maintainer who deleted a release and re-pushed the tag could re-run the
-workflow, and the bytes under the S3 key would change without any error. If
-you pinned a hash from an earlier look at a release, a changed hash for the
-same tag is itself the finding.
+This is a policy, not a technical guarantee, but the release workflow makes
+the ordinary accidents fail. Before it uploads anything or touches S3, it asks
+GitHub what state the release for the tag is in:
+
+- **No release exists** — it creates one as a pre-release.
+- **The release is still a pre-release** — this is an interrupted publish, so
+  it re-uploads the assets and resumes the fan-out. A pre-release is not a
+  published tag: the release page marks it incomplete, and no Lambda should be
+  pointed at it.
+- **The release is complete** — it refuses to run, with an error saying the tag
+  has already been published and that re-publishing it would change the bytes
+  under a published key. It uploads nothing and writes to no bucket.
+
+The remaining hole is manual: a maintainer who deleted the release and
+re-pushed the tag could start over from "no release exists", and the bytes
+under the S3 key would change without any error. If you pinned a hash from an
+earlier look at a release, a changed hash for the same tag is itself the
+finding.
 
 ## What was and was not tested when this was written
 

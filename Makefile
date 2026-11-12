@@ -70,6 +70,7 @@ publish:
 repro-check:
 	$(MAKE) checksums
 	first="$$(mktemp -d)" && \
+	trap 'rm -rf "$$first"' EXIT && \
 	cp dist/soci_index_generator_lambda.zip.sha256 dist/bootstrap.sha256 "$$first/" && \
 	$(MAKE) clean && \
 	$(MAKE) build BUILD_FLAGS=--no-cache && \

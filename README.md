@@ -76,8 +76,11 @@ make checksums   # dist/*.sha256 for the zip and the bootstrap binary
   `s3://apppack-lambdas-<region>/soci-index-generator/<tag>/` for each region in
   `REGIONS.txt` (failing unless every region succeeded), and only then clears
   the pre-release flag. A release still marked "Pre-release" is an incomplete
-  publish. The workflow is safe to re-run: it finishes the fan-out rather than
-  needing the release deleted. **Published tags are never deleted or re-pointed**; see
+  publish. Re-running an interrupted publish is safe: the workflow sees the
+  release is still a pre-release and finishes the fan-out, rather than needing
+  the release deleted. It refuses to run against a completed release, so a
+  published tag is never re-pointed. **Published tags are never deleted or
+  re-pointed**; see
   [docs/verifying.md](docs/verifying.md#releases-are-immutable-by-policy).
 
 ## Repository setup
