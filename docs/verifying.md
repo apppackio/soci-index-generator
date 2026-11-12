@@ -74,7 +74,7 @@ could have been written by someone else). Step 1 covers the latter.
 Each release attaches the zip and two checksum files.
 
 ```bash
-gh release download <tag> --repo apppackio/apppack-soci-index-generator \
+gh release download <tag> --repo apppackio/soci-index-generator \
   --pattern '*.sha256' --pattern 'soci_index_generator_lambda.zip' --dir release
 
 # the release's checksum file describes the release's zip
@@ -98,11 +98,11 @@ release and an S3 object can both hold an artifact nobody can reproduce.
 ## Step 4: rebuild from source and compare
 
 Run this from the `verify/` directory you created in step 2 (so that the
-clone lands in `verify/apppack-soci-index-generator/`, next to `release/`).
+clone lands in `verify/soci-index-generator/`, next to `release/`).
 
 ```bash
-git clone https://github.com/apppackio/apppack-soci-index-generator
-cd apppack-soci-index-generator
+git clone https://github.com/apppackio/soci-index-generator
+cd soci-index-generator
 git checkout <tag>
 make build checksums
 cat dist/soci_index_generator_lambda.zip.sha256 dist/bootstrap.sha256

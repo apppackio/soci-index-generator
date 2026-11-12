@@ -1,4 +1,4 @@
-# apppack-soci-index-generator
+# soci-index-generator
 
 A fork of the AWS SOCI index generator Lambda. AppPack runs it inside
 customers' AWS accounts to give each app's container images a SOCI v2 index,
