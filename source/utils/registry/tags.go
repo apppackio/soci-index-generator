@@ -3,6 +3,22 @@
 
 package registry
 
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda/utils/log"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/errdef"
+)
+
+// tagger is the slice of an oras repository that tagAll needs.
+type tagger interface {
+	Resolve(ctx context.Context, reference string) (ocispec.Descriptor, error)
+	Tag(ctx context.Context, desc ocispec.Descriptor, reference string) error
+}
+
 // TagsToMove returns every tag the converted index must take over: the tags
 // ECR reports on the source digest, plus the event's tag if ECR did not list it
 // (ECR is eventually consistent). Order is preserved and duplicates dropped.
@@ -22,4 +38,36 @@ func TagsToMove(eventTag string, repositoryTags []string) []string {
 		tags = append(tags, t)
 	}
 	return tags
+}
+
+// tagAll points each tag at desc, but only if the tag still resolves to
+// sourceDigest. The tag list was read before a conversion that takes minutes, so
+// a newer build may have taken a tag (typically latest) in the meantime:
+//   - resolves to sourceDigest: move it
+//   - resolves to another digest: skip, a newer build owns it
+//   - does not resolve: skip, we move tags and never resurrect deleted ones
+//
+// This narrows the race from minutes to milliseconds (a build can still take a
+// tag between our Resolve and Tag); it does not close it. A failure on any tag
+// stops and returns an error naming it.
+func tagAll(ctx context.Context, t tagger, desc ocispec.Descriptor, sourceDigest string, tags []string) error {
+	for _, tag := range tags {
+		current, err := t.Resolve(ctx, tag)
+		if errors.Is(err, errdef.ErrNotFound) {
+			log.Warn(ctx, fmt.Sprintf("Not tagging index with %s: tag no longer exists", tag))
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("failed to resolve tag %q before moving it: %w", tag, err)
+		}
+		if current.Digest.String() != sourceDigest {
+			log.Warn(ctx, fmt.Sprintf("Not tagging index with %s: tag now points at %s, not the converted image %s", tag, current.Digest, sourceDigest))
+			continue
+		}
+		log.Info(ctx, fmt.Sprintf("Tagging index with %s", tag))
+		if err := t.Tag(ctx, desc, tag); err != nil {
+			return fmt.Errorf("failed to tag artifact with %q: %w", tag, err)
+		}
+	}
+	return nil
 }

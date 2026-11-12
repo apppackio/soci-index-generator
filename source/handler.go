@@ -182,7 +182,7 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 
 	ctx = context.WithValue(ctx, SOCIIndexDigestKey, indexDescriptor.Digest.String())
 
-	err = registry.Push(ctx, sociStore, *indexDescriptor, repo, tags)
+	err = registry.Push(ctx, sociStore, *indexDescriptor, repo, digest, tags)
 	if err != nil {
 		return lambdaError(ctx, PushFailedMessage, err)
 	}
