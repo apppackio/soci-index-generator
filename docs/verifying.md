@@ -15,41 +15,44 @@ the last step connects the artifact to source.
 `unzip`. Step 4 builds for `linux/amd64`; on an arm64 machine (Apple silicon,
 Graviton) Docker emulates, so expect it to take minutes, not seconds.
 
-## Step 1: find which release your Lambda was deployed from
+## Step 1: ask Lambda what it is running
 
-The function comes from a version-pinned S3 key, `soci-index-generator/<tag>/soci_index_generator_lambda.zip`,
-named in the template of your app's CloudFormation stack.
+This is the strongest check in the procedure, because it does not trust S3.
+Lambda reports `CodeSha256`, its own SHA-256 of the package it deployed.
+Comparing that with the released zip's hash (step 3) verifies **what is
+actually running**, whatever the bucket holds now or held when you deployed.
 
-```bash
-aws cloudformation describe-stack-resources --stack-name apppack-app-<name> \
-  --query "StackResources[?ResourceType=='AWS::Lambda::Function'].[LogicalResourceId,PhysicalResourceId]" --output text
-
-# the key (and so the tag) is in the stack template, under the function's Code
-aws cloudformation get-template --stack-name apppack-app-<name> \
-  --query TemplateBody --output text | grep -n 'soci-index-generator/'
-```
-
-The logical ID of the function begins with `SociIndexGenerator`; use its
-physical ID in step 1b. The tag is the `vX.Y.Z` path segment of the key.
-
-**Step 1b: record what Lambda itself reports.**
+The CloudFormation logical ID of the function is fixed by AppPack's template:
+`SociIndexGeneratorLambdaFunction`. The stack *name* is chosen by the AppPack
+CLI and is not derivable from this repo, so supply your own app's stack name
+(find it with `aws cloudformation list-stacks`).
 
 ```bash
-aws lambda get-function --function-name <physical-id> \
-  --query Configuration.CodeSha256 --output text
-```
+aws cloudformation describe-stack-resources --stack-name <your app's stack> \
+  --logical-resource-id SociIndexGeneratorLambdaFunction \
+  --query 'StackResources[0].PhysicalResourceId' --output text   # (--query untested)
 
-`CodeSha256` is the SHA-256 of the deployment package, base64-encoded. Convert
-it to hex to compare with the hashes below:
+aws lambda get-function --function-name <that physical id> \
+  --query Configuration.CodeSha256 --output text                # (--query untested)
 
-```bash
+# CodeSha256 is base64; convert to hex to compare with the release's hashes
 echo '<CodeSha256 value>' | base64 -d | xxd -p -c 64
 ```
 
-*Proves:* which package AWS says the function runs, and, compared with the
-release's zip hash in step 3, whether that is the released zip.
+*Proves:* which package AWS says the function runs. Matched against the
+release zip hash, whether that is the released zip.
 *Does not prove:* anything about the source. It is a hash AWS reports about
 the package it holds.
+
+To learn which tag your account was deployed from (needed for steps 2 to 4),
+read the version-pinned key, `soci-index-generator/<tag>/soci_index_generator_lambda.zip`,
+from the stack template. The tag is its `vX.Y.Z` segment. (`get-function` does
+not return the S3 key; it returns a presigned URL to Lambda's own copy.)
+
+```bash
+aws cloudformation get-template --stack-name <your app's stack> \
+  --query TemplateBody --output text | grep -n 'soci-index-generator/'   # (untested)
+```
 
 ## Step 2: download what your account's Lambda was built from
 
@@ -62,7 +65,7 @@ sha256sum soci_index_generator_lambda.zip
 *Proves:* what the bucket holds under that key right now.
 *Does not prove:* that it is the released artifact, or that it is what your
 Lambda is running (the stack could have been updated since, or the bucket
-could have been written by someone else). Step 1b covers the latter.
+could have been written by someone else). Step 1 covers the latter.
 
 ## Step 3: compare with the public GitHub release
 
@@ -78,7 +81,7 @@ sha256sum release/soci_index_generator_lambda.zip soci_index_generator_lambda.zi
 ```
 
 *Proves:* the bucket holds the same bytes that were published on the release
-(and, with step 1b, that your Lambda runs them).
+(and, with step 1, that your Lambda runs them).
 *Does not prove:* that those bytes were built from this source. A GitHub
 release and an S3 object can both hold an artifact nobody can reproduce.
 **Only step 4 ties the artifact to source.**
@@ -176,9 +179,17 @@ same tag is itself the finding.
 
 ## What was and was not tested when this was written
 
+*As of 2026-11-12, at commit e65da78 (documentation added after it).*
+
 This procedure was written before the first release existed. The checksum
 commands (`make checksums`, `sha256sum -c`, `unzip -o ... bootstrap`) and the
-`CodeSha256` conversion were run against a local development build. The steps
-that need a published release, a real S3 bucket or a deployed stack (the `aws`
-and `gh release download` commands) had not been run against a real release.
-If one of those commands fails as written, the document is wrong, not you.
+`CodeSha256` base64-to-hex conversion were run against a local development
+build. The steps that need a published release, a real S3 bucket or a deployed
+stack (the `aws` and `gh release download` commands, including every `--query`
+and grep marked untested above) had not been run. The statement that
+`CodeSha256` is the base64 SHA-256 of the package is AWS's documented
+behaviour, not something tested here. If one of those commands fails as
+written, the document is wrong, not you.
+
+**Exit condition:** once the first release has been verified end to end,
+delete this section and record the result (date, tag, which hashes matched).

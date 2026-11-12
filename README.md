@@ -54,7 +54,9 @@ make checksums   # dist/*.sha256 for the zip and the bootstrap binary
   arm64 host (Apple silicon) Docker emulates it, so a local build takes
   minutes.
 - `CGO_LDFLAGS_ALLOW='-l:libz\.a'` in `source/Dockerfile` is deliberate. Go
-  1.26.11 rejects the vendored soci-snapshotter's `-l:libz.a` cgo flag. The
+  1.26.11 (`golang:1.26-alpine`) rejects the vendored soci-snapshotter's `-l:libz.a` cgo flag with
+  `invalid flag in #cgo LDFLAGS` (reproduced against an untouched upstream copy;
+  go1.26.0 and 1.25 build it fine). The
   allowlist re-permits exactly that one flag and nothing broader; it is not a
   general relaxation of cgo's flag checking.
 - CI (`.github/workflows/ci.yml`) tests, builds, then rebuilds with
