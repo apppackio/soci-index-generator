@@ -12,7 +12,7 @@ the last step connects the artifact to source.
 ## What you need
 
 `aws` (with read access to your account), `gh`, `git`, `docker`, `sha256sum`,
-`unzip`. Step 4 builds for `linux/amd64`; on an arm64 machine (Apple silicon,
+`cmp`, `unzip`, `base64` and `od`. Step 4 builds for `linux/amd64`; on an arm64 machine (Apple silicon,
 Graviton) Docker emulates, so expect it to take minutes, not seconds.
 
 ## Step 1: ask Lambda what it is running
@@ -36,11 +36,12 @@ aws lambda get-function --function-name <that physical id> \
   --query Configuration.CodeSha256 --output text                # (--query untested)
 
 # CodeSha256 is base64; convert to hex to compare with the release's hashes
-echo '<CodeSha256 value>' | base64 -d | xxd -p -c 64
+echo '<CodeSha256 value>' | base64 -d | od -An -tx1 | tr -d ' \n'; echo
 ```
 
-*Proves:* which package AWS says the function runs. Matched against the
-release zip hash, whether that is the released zip.
+*Proves:* which package AWS says the function runs. Step 3 compares this
+value with the released zip's hash; that comparison is what shows whether the
+function runs the released zip.
 *Does not prove:* anything about the source. It is a hash AWS reports about
 the package it holds.
 
@@ -74,14 +75,21 @@ Each release attaches the zip and two checksum files.
 ```bash
 gh release download <tag> --repo apppackio/apppack-soci-index-generator \
   --pattern '*.sha256' --pattern 'soci_index_generator_lambda.zip' --dir release
-cd release
-sha256sum -c soci_index_generator_lambda.zip.sha256      # the release's own zip
-cd ..
-sha256sum release/soci_index_generator_lambda.zip soci_index_generator_lambda.zip   # S3 copy: both lines must match
+
+# the release's checksum file describes the release's zip
+(cd release && sha256sum -c soci_index_generator_lambda.zip.sha256)
+
+# the S3 copy from step 2 is byte-identical to the release zip (silent if so)
+cmp soci_index_generator_lambda.zip release/soci_index_generator_lambda.zip && echo "S3 copy == release"
+
+# what Lambda reports (step 1) is the release zip's hash: prints OK or FAILED
+echo "<hex from step 1>  release/soci_index_generator_lambda.zip" | sha256sum -c -
 ```
 
-*Proves:* the bucket holds the same bytes that were published on the release
-(and, with step 1, that your Lambda runs them).
+*Proves:* the first command, that the release's checksum file matches the
+release's zip; the second, that the bucket holds the same bytes that were
+published on the release; the third, that the package your Lambda runs is the
+released zip.
 *Does not prove:* that those bytes were built from this source. A GitHub
 release and an S3 object can both hold an artifact nobody can reproduce.
 **Only step 4 ties the artifact to source.**
@@ -96,18 +104,28 @@ make build checksums
 cat dist/soci_index_generator_lambda.zip.sha256 dist/bootstrap.sha256
 ```
 
-Compare with the release's files:
+Compare your rebuild with the release's files:
 
 ```bash
-# the zip
-diff dist/soci_index_generator_lambda.zip.sha256 ../verify/release/soci_index_generator_lambda.zip.sha256
+# the zip: ties the released zip to your rebuild (see the caveat below)
+cmp dist/soci_index_generator_lambda.zip ../verify/release/soci_index_generator_lambda.zip && echo "zip reproduces"
 
-# the binary: bootstrap.sha256 names a file inside the zip, not a loose file,
-# so extract it first or `sha256sum -c` reports "No such file"
-cd ../verify/release
-unzip -o soci_index_generator_lambda.zip bootstrap
-sha256sum -c bootstrap.sha256
+# the binary: your rebuild's bootstrap hash against the release's
+diff dist/bootstrap.sha256 ../verify/release/bootstrap.sha256 && echo "bootstrap reproduces"
+
+# and bind the release's bootstrap.sha256 to the release's own zip. It names a
+# file inside the zip, not a loose file, so extract it first or `sha256sum -c`
+# reports "No such file"
+(cd ../verify/release && unzip -o soci_index_generator_lambda.zip bootstrap && sha256sum -c bootstrap.sha256)
 ```
+
+What each does. The `diff` of `bootstrap.sha256` is the one comparison that
+ties the binary to source: your build, from this tag, produced the same
+binary the release shipped. The `cmp` of the zips says the same about the
+framing, but see below for why it can differ legitimately. The extract-and-check
+proves only that the release's `bootstrap.sha256` describes the release's own
+zip; it is the release agreeing with itself, and it is needed to be sure the
+`diff` above compares the binary that is actually in the zip.
 
 ## Which hash to trust: two anchors
 
@@ -145,8 +163,10 @@ proves is weak (something moved, possibly nothing sinister).
 ## What a full pass proves, and what it does not
 
 A pass on all four steps, comparing the `bootstrap` hash, shows that the
-binary inside the zip your Lambda runs was compiled from the source at that
-tag, using the builder image named in `source/Dockerfile`.
+binary inside the zip your Lambda runs reproduces from this source at that
+tag, the pinned builder image, and whatever `apk` packages resolved when you
+rebuilt. Those packages are not pinned, so the builder is not fully
+identified by its digest.
 
 It does **not** show:
 
@@ -158,8 +178,6 @@ It does **not** show:
 - anything about the rest of your stack: the Lambda's IAM role, its
   environment, the EventBridge rule that triggers it. Those are defined in
   AppPack's CloudFormation templates, not here.
-- that the commands in this document were run against a particular release
-  by anyone but you.
 
 ## Releases are immutable by policy
 
@@ -179,7 +197,7 @@ same tag is itself the finding.
 
 ## What was and was not tested when this was written
 
-*As of 2026-11-12, at commit e65da78 (documentation added after it).*
+*As of 2026-11-12, describing the source at commit e65da78.*
 
 This procedure was written before the first release existed. The checksum
 commands (`make checksums`, `sha256sum -c`, `unzip -o ... bootstrap`) and the

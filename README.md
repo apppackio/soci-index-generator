@@ -32,6 +32,9 @@ honest account of what it does and does not prove, is in
    cannot tell.
 3. **A size guard**: images over 6 GB compressed are skipped, not attempted.
    Lambda's 10 GB `/tmp` and 15 minute limit would otherwise wedge the function.
+   It fails open: if ECR reports no size for an image, the guard cannot run,
+   conversion proceeds, and a warning is logged and the metric carries
+   `size_guard=not-enforced`.
 4. **EMF metrics** (namespace `AppPack/SOCI`) for each invocation, because
    nothing breaks when conversion fails and nothing else would say so.
 
@@ -55,8 +58,7 @@ make checksums   # dist/*.sha256 for the zip and the bootstrap binary
   minutes.
 - `CGO_LDFLAGS_ALLOW='-l:libz\.a'` in `source/Dockerfile` is deliberate. Go
   1.26.11 (`golang:1.26-alpine`) rejects the vendored soci-snapshotter's `-l:libz.a` cgo flag with
-  `invalid flag in #cgo LDFLAGS` (reproduced against an untouched upstream copy;
-  go1.26.0 and 1.25 build it fine). The
+  `invalid flag in #cgo LDFLAGS` (reproduced against an untouched upstream copy). The
   allowlist re-permits exactly that one flag and nothing broader; it is not a
   general relaxation of cgo's flag checking.
 - CI (`.github/workflows/ci.yml`) tests, builds, then rebuilds with

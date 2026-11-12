@@ -1,3 +1,4 @@
+// Modified by AppPack from the upstream original (see NOTICE.txt).
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
