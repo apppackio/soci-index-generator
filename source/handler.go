@@ -50,6 +50,7 @@ const (
 	ConversionCheckFailedMessage = "Skipping image: conversion check failed, image left unconverted"
 	DescribeFailedMessage        = "ECR DescribeImages error"
 	ImageGoneMessage             = "Skipping image: no longer present in the repository"
+	ValidationFailedMessage      = "ECRImageActionEvent validation error"
 	OversizedMessage             = "Skipping image: compressed size exceeds the conversion ceiling"
 
 	artifactsStoreName = "store"
@@ -88,10 +89,16 @@ func newInvocation(out io.Writer, app, repository, digest string) *invocation {
 // finish emits the invocation's metric. The error is deliberately dropped: a
 // metrics failure must never change the handler's result, since the worst
 // acceptable outcome is a slow task start, not a lost index.
-func (inv *invocation) finish(outcome, reason string) {
+//
+// reason must be a bounded, stable value (a message constant) so outcomes
+// aggregate; the unbounded raw error text goes in the separate error property.
+func (inv *invocation) finish(outcome, reason string, err error) {
 	props := map[string]string{"repository": inv.repository, "digest": inv.digest}
 	if reason != "" {
 		props["reason"] = reason
+	}
+	if err != nil {
+		props["error"] = err.Error()
 	}
 	if inv.sizeGuardSkipped {
 		props["size_guard"] = "not-enforced"
@@ -102,13 +109,13 @@ func (inv *invocation) finish(outcome, reason string) {
 // skip emits a skipped metric and returns the message with a nil error, so
 // Lambda does not retry.
 func (inv *invocation) skip(reason, msg string) (string, error) {
-	inv.finish(metrics.OutcomeSkipped, reason)
+	inv.finish(metrics.OutcomeSkipped, reason, nil)
 	return msg, nil
 }
 
 // fail emits a failure metric and returns the error to Lambda.
 func (inv *invocation) fail(ctx context.Context, msg string, err error) (string, error) {
-	inv.finish(metrics.OutcomeFailure, msg)
+	inv.finish(metrics.OutcomeFailure, msg, err)
 	return lambdaError(ctx, msg, err)
 }
 
@@ -117,8 +124,7 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 
 	ctx, err := validateEvent(ctx, event)
 	if err != nil {
-		inv.finish(metrics.OutcomeSkipped, "invalid-event")
-		return lambdaError(ctx, "ECRImageActionEvent validation error", err)
+		return inv.fail(ctx, ValidationFailedMessage, err)
 	}
 
 	// Get the SOCI index version from environment variable
@@ -238,7 +244,7 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	}
 
 	log.Info(ctx, BuildAndPushSuccessMessage)
-	inv.finish(metrics.OutcomeSuccess, "")
+	inv.finish(metrics.OutcomeSuccess, "", nil)
 	return BuildAndPushSuccessMessage, nil
 }
 
