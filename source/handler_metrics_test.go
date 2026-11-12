@@ -1,3 +1,6 @@
+// Added by AppPack (see NOTICE.txt); not part of the upstream source.
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (

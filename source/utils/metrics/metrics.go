@@ -1,3 +1,6 @@
+// Added by AppPack (see NOTICE.txt); not part of the upstream source.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package metrics emits CloudWatch Embedded Metric Format (EMF) documents.
 //
 // EMF needs no IAM permission and no API call: a correctly shaped JSON line on
