@@ -27,10 +27,10 @@ honest account of what it does and does not prove, is in
 
 1. **Moves the original tags onto the converted index** (upstream publishes
    `{tag}-soci`). AppPack deploys `{repo}:{commit}`, so a new tag would never be used.
-2. **Loop prevention inspects the manifest, not the tag name.** Moving tags
-   raises new push events; the generator skips any digest that is already an
-   image index carrying a SOCI index, and skips (rather than converts) when it
-   cannot tell.
+2. **Loop prevention inspects the manifest, not the tag name.** The builder
+   invokes the generator once per build; a duplicate or retried delivery still
+   cannot convert an image that is already an index carrying a SOCI index, and
+   the generator skips (rather than converts) when it cannot tell.
 3. **A size guard**: images over 6 GB compressed are skipped, not attempted.
    Lambda's 10 GB `/tmp` and 15 minute limit would otherwise wedge the function.
    It fails open: if ECR reports no size for an image, the guard cannot run,
@@ -39,10 +39,13 @@ honest account of what it does and does not prove, is in
 4. **EMF metrics** (namespace `AppPack/SOCI`) for each invocation, because
    nothing breaks when conversion fails and nothing else would say so.
 
-Upstream's separate **filter Lambda is intentionally absent**. The checks that
-matter here (already converted, too large, event validation) run inside the
-generator; scoping to one repository is done by the per-app EventBridge rule
-in AppPack's stack, which is not in this repo.
+Upstream's separate **filter Lambda is intentionally absent**, and there is no
+EventBridge rule. The build's CodeBuild project invokes the generator once per
+build after all of an image's tags are pushed (`SOCI_GENERATOR_FUNCTION_ARN`),
+and the function reads its repository and registry from `ECR_REPOSITORY` and
+`ECR_REGISTRY`. The builder sends only the tag to convert:
+`{"tag": "..."}`. The checks that matter (already converted, too large) run
+inside the generator.
 
 ## Build, test, release
 

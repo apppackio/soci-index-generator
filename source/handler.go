@@ -9,17 +9,14 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"runtime/debug"
 	"sort"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"errors"
 	"path"
 
-	"github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda/events"
 	"github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda/utils/fs"
 	"github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda/utils/log"
 	"github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda/utils/metrics"
@@ -54,6 +51,8 @@ const (
 	DescribeFailedMessage        = "ECR DescribeImages error"
 	ImageGoneMessage             = "Skipping image: no longer present in the repository"
 	ValidationFailedMessage      = "ECRImageActionEvent validation error"
+	MissingRepositoryMessage     = "ECR_REPOSITORY is not configured"
+	MissingRegistryMessage       = "ECR_REGISTRY is not configured"
 	InvalidIndexVersionMessage   = "Invalid soci_index_version configuration"
 	NoTagsResolveMessage         = "Skipping image: no candidate tag still points at this image"
 	OversizedMessage             = "Skipping image: compressed size exceeds the conversion ceiling"
@@ -70,10 +69,6 @@ const (
 type contextKey string
 
 const (
-	RegistryURLKey     contextKey = "RegistryURL"
-	RepositoryNameKey  contextKey = "RepositoryName"
-	ImageDigestKey     contextKey = "ImageDigest"
-	ImageTagKey        contextKey = "ImageTag"
 	SOCIIndexDigestKey contextKey = "SOCIIndexDigest"
 	SociIndexVersion   string     = "soci_index_version"
 )
@@ -144,8 +139,20 @@ func (inv *invocation) fail(ctx context.Context, msg string, err error) (string,
 	return lambdaError(ctx, msg, err)
 }
 
-func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (string, error) {
-	inv := newInvocation(os.Stdout, os.Getenv("APP_NAME"), event.Detail.RepositoryName, event.Detail.ImageDigest)
+// ConversionRequest is the builder's payload: the tag to convert. The
+// repository and registry come from the function's environment, which the app
+// stack sets from its ECR repository.
+type ConversionRequest struct {
+	Tag string `json:"tag"`
+}
+
+func HandleRequest(ctx context.Context, req ConversionRequest) (string, error) {
+	repo := os.Getenv("ECR_REPOSITORY")
+	if repo == "" {
+		// Keeps the manual upstream test's variable working.
+		repo = os.Getenv("REPOSITORY_NAME")
+	}
+	inv := newInvocation(os.Stdout, os.Getenv("APP_NAME"), repo, "")
 
 	// A panic unwinds past every exit path below. Report it, then re-panic:
 	// swallowing it would turn a crash into a silent success.
@@ -160,9 +167,23 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 		}
 	}()
 
-	ctx, err := validateEvent(ctx, event)
-	if err != nil {
-		return inv.fail(ctx, ValidationFailedMessage, err)
+	if repo == "" {
+		return inv.fail(ctx, MissingRepositoryMessage, errors.New("ECR_REPOSITORY is not set"))
+	}
+	registryURL := os.Getenv("ECR_REGISTRY")
+	if registryURL == "" {
+		// Keeps the manual upstream test's variables working.
+		account, region := os.Getenv("AWS_ACCOUNT_ID"), os.Getenv("AWS_REGION")
+		if account != "" && region != "" {
+			registryURL = account + ".dkr.ecr." + region + ".amazonaws.com"
+		}
+	}
+	if registryURL == "" {
+		return inv.fail(ctx, MissingRegistryMessage, errors.New("ECR_REGISTRY is not set"))
+	}
+	if req.Tag == "" {
+		log.Info(ctx, "Skipping SOCI index generation for V2 as image has no tag")
+		return inv.skip("no-tag", "Skipped SOCI index generation for V2 as image has no tag")
 	}
 
 	sociIndexVersion, err := resolveIndexVersion(os.Getenv(SociIndexVersion))
@@ -171,24 +192,37 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	}
 	log.Info(ctx, fmt.Sprintf("Using SOCI index version: %s", sociIndexVersion))
 
-	repo := event.Detail.RepositoryName
-	digest := event.Detail.ImageDigest
-	registryUrl := buildEcrRegistryUrl(event)
-	ctx = context.WithValue(ctx, RegistryURLKey, registryUrl)
-
-	registry, err := registryutils.Init(ctx, registryUrl)
+	registry, err := registryutils.Init(ctx, registryURL)
 	if err != nil {
 		return inv.fail(ctx, "Remote registry initialization error", err)
 	}
 
-	// Loop guard: moving tags onto a converted index raises new PUSH events that
-	// must not re-enter conversion. Cheapest and most dangerous check, so first.
+	// The builder sends only the tag. This one call resolves it to a digest and
+	// returns the tags and compressed size the rest of the invocation needs.
+	ecrClient, err := registryutils.NewEcrClient(ctx)
+	if err != nil {
+		return inv.fail(ctx, DescribeFailedMessage, err)
+	}
+	info, err := registryutils.DescribeImageByTag(ctx, ecrClient, repo, req.Tag)
+	if err != nil {
+		return inv.fail(ctx, DescribeFailedMessage, err)
+	}
+	if !info.Found {
+		return inv.skip("image-gone", ImageGoneMessage)
+	}
+	digest := info.Digest
+	inv.digest = digest
+
+	// Loop guard: duplicate or retried deliveries must not convert an image that
+	// is already a SOCI index. The builder invokes once per build and the
+	// tag-move events no longer exist, so this is the backstop for a builder
+	// retry or a manual invoke.
 	//
-	// LOAD-BEARING ORDER: this call must stay here, before DescribeImage and long
-	// before Pull. NO TEST ENFORCES THIS. shouldSkipConversion is unit tested, but
-	// nothing fails if the handler stops calling IsConverted or someone moves it
-	// below Pull. The only regression net is live question Q5 in verify/RESULTS.md.
-	// If you touch this prologue, re-run Q5.
+	// LOAD-BEARING ORDER: this call must stay before Pull. NO TEST ENFORCES THIS.
+	// shouldSkipConversion is unit tested, but nothing fails if the handler stops
+	// calling IsConverted or someone moves it below Pull. The only regression net
+	// is live question Q5 in verify/RESULTS.md. If you touch this prologue,
+	// re-run Q5.
 	converted, err := registry.IsConverted(ctx, repo, digest)
 	if shouldSkipConversion(converted, err) {
 		if err != nil {
@@ -200,17 +234,6 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 	}
 
 	// Size ceiling. Each skip returns a nil error so Lambda does not retry.
-	ecrClient, err := registryutils.NewEcrClient(ctx)
-	if err != nil {
-		return inv.fail(ctx, DescribeFailedMessage, err)
-	}
-	info, err := registryutils.DescribeImage(ctx, ecrClient, repo, digest)
-	if err != nil {
-		return inv.fail(ctx, DescribeFailedMessage, err)
-	}
-	if !info.Found {
-		return inv.skip("image-gone", ImageGoneMessage)
-	}
 	if !info.SizeKnown {
 		inv.sizeGuardSkipped = true
 		log.Warn(ctx, "ECR did not report an image size, so the size ceiling was NOT enforced: the size guard did not run")
@@ -227,16 +250,9 @@ func HandleRequest(ctx context.Context, event events.ECRImageActionEvent) (strin
 		return inv.skip("manifest-validation", "Exited early due to manifest validation error")
 	}
 
-	// Only convert images that have a tag, and move those tags onto the new index.
-	originalTag, ok := ctx.Value(ImageTagKey).(string)
-	if !ok || originalTag == "" {
-		log.Info(ctx, "Skipping SOCI index generation for V2 as image has no tag")
-		return inv.skip("no-tag", "Skipped SOCI index generation for V2 as image has no tag")
-	}
-
 	// The converted index takes over every tag on the source digest, so
 	// workloads deploying {repo}:{tag} get lazy loading.
-	tags := registryutils.TagsToMove(originalTag, info.Tags)
+	tags := registryutils.TagsToMove(req.Tag, info.Tags)
 	log.Info(ctx, fmt.Sprintf("Candidate tags to move onto the converted index: %v", tags))
 
 	// Resolve before spending minutes of zTOC work. If no candidate still points
@@ -325,89 +341,6 @@ func resolveIndexVersion(raw string) (string, error) {
 // costs one image its lazy loading; looping is a billing incident.
 func shouldSkipConversion(converted bool, checkErr error) bool {
 	return checkErr != nil || converted
-}
-
-// Validate the given event, populating the context with relevant valid event properties
-func validateEvent(ctx context.Context, event events.ECRImageActionEvent) (context.Context, error) {
-	var errors []error
-
-	if event.Source != "aws.ecr" {
-		errors = append(errors, fmt.Errorf("the event's 'source' must be 'aws.ecr'"))
-	}
-	if event.Account == "" {
-		errors = append(errors, fmt.Errorf("the event's 'account' must not be empty"))
-	}
-	if event.DetailType != "ECR Image Action" {
-		errors = append(errors, fmt.Errorf("the event's 'detail-type' must be 'ECR Image Action'"))
-	}
-	if event.Detail.ActionType != "PUSH" {
-		errors = append(errors, fmt.Errorf("the event's 'detail.action-type' must be 'PUSH'"))
-	}
-	if event.Detail.Result != "SUCCESS" {
-		errors = append(errors, fmt.Errorf("the event's 'detail.result' must be 'SUCCESS'"))
-	}
-	if event.Detail.RepositoryName == "" {
-		errors = append(errors, fmt.Errorf("the event's 'detail.repository-name' must not be empty"))
-	}
-	if event.Detail.ImageDigest == "" {
-		errors = append(errors, fmt.Errorf("the event's 'detail.image-digest' must not be empty"))
-	}
-
-	validAccountId, err := regexp.MatchString(`[0-9]{12}`, event.Account)
-	if err != nil {
-		errors = append(errors, err)
-	}
-	if !validAccountId {
-		errors = append(errors, fmt.Errorf("the event's 'account' must be a valid AWS account ID"))
-	}
-
-	validRepositoryName, err := regexp.MatchString(`(?:[a-z0-9]+(?:[._-][a-z0-9]+)*/)*[a-z0-9]+(?:[._-][a-z0-9]+)*`, event.Detail.RepositoryName)
-	if err != nil {
-		errors = append(errors, err)
-	}
-	if validRepositoryName {
-		ctx = context.WithValue(ctx, RepositoryNameKey, event.Detail.RepositoryName)
-	} else {
-		errors = append(errors, fmt.Errorf("the event's 'detail.repository-name' must be a valid repository name"))
-	}
-
-	validImageDigest, err := regexp.MatchString(`[[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z][A-Za-z0-9]*)*[:][A-Fa-f0-9]{32,}`, event.Detail.ImageDigest)
-	if err != nil {
-		errors = append(errors, err)
-	}
-	if validImageDigest {
-		ctx = context.WithValue(ctx, ImageDigestKey, event.Detail.ImageDigest)
-	} else {
-		errors = append(errors, fmt.Errorf("the event's 'detail.image-digest' must be a valid image digest"))
-	}
-
-	// missing/empty tag is OK
-	if event.Detail.ImageTag != "" {
-		validImageTag, err := regexp.MatchString(`[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`, event.Detail.ImageTag)
-		if err != nil {
-			errors = append(errors, err)
-		}
-		if validImageTag {
-			ctx = context.WithValue(ctx, ImageTagKey, event.Detail.ImageTag)
-		} else {
-			errors = append(errors, fmt.Errorf("the event's 'detail.image-tag' must be empty or a valid image tag"))
-		}
-	}
-
-	if len(errors) == 0 {
-		return ctx, nil
-	} else {
-		return ctx, errors[0]
-	}
-}
-
-// Returns ecr registry url from an image action event
-func buildEcrRegistryUrl(event events.ECRImageActionEvent) string {
-	var awsDomain = ".amazonaws.com"
-	if strings.HasPrefix(event.Region, "cn") {
-		awsDomain = ".amazonaws.com.cn"
-	}
-	return event.Account + ".dkr.ecr." + event.Region + awsDomain
 }
 
 // Create a temp directory in /tmp

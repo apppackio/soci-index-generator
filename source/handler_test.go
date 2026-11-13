@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda/events"
 	"github.com/aws/aws-lambda-go/lambdacontext"
 )
 
@@ -19,8 +18,8 @@ import (
 // AWS_ACCOUNT_ID: your aws account id.
 // AWS_REGION: the region of your private ECR repository.
 // REPOSITORY_NAME: name of your private ECR repository.
-// DOCKER_IMAGE_DIGEST: the digest of your image.
-// OCI_IMAGE_DIGEST: the digest of your OCI image.
+// DOCKER_IMAGE_TAG: a tag on your image.
+// OCI_IMAGE_TAG: a tag on your OCI image.
 func TestHandlerHappyPath(t *testing.T) {
 	// Only SOCI v2 is supported (see resolveIndexVersion in handler.go)
 	testVersions := []string{"V2"}
@@ -33,27 +32,12 @@ func TestHandlerHappyPath(t *testing.T) {
 			}
 			t.Logf("Testing with SOCI index version: %s", version)
 
-			doTest := func(imageDigest string) {
-				event := events.ECRImageActionEvent{
-					Version:    "1",
-					Id:         "id",
-					DetailType: "ECR Image Action",
-					Source:     "aws.ecr",
-					Account:    os.Getenv("AWS_ACCOUNT_ID"),
-					Time:       "time",
-					Region:     os.Getenv("AWS_REGION"),
-					Detail: events.ECRImageActionEventDetail{
-						ActionType:     "PUSH",
-						Result:         "SUCCESS",
-						RepositoryName: os.Getenv("REPOSITORY_NAME"),
-						ImageDigest:    imageDigest,
-						ImageTag:       "test",
-					},
-				}
+			doTest := func(tag string) {
+				event := ConversionRequest{Tag: tag}
 
 				// making the test context
 				lc := lambdacontext.LambdaContext{}
-				lc.AwsRequestID = "request-id-" + imageDigest + "-" + version
+				lc.AwsRequestID = "request-id-" + tag + "-" + version
 				ctx := lambdacontext.NewContext(context.Background(), &lc)
 				ctx, cancel := context.WithDeadline(ctx, time.Now().Add(time.Minute))
 				defer cancel()
@@ -69,8 +53,8 @@ func TestHandlerHappyPath(t *testing.T) {
 				}
 			}
 
-			doTest(os.Getenv("DOCKER_IMAGE_DIGEST"))
-			doTest(os.Getenv("OCI_IMAGE_DIGEST"))
+			doTest(os.Getenv("DOCKER_IMAGE_TAG"))
+			doTest(os.Getenv("OCI_IMAGE_TAG"))
 		})
 	}
 }
@@ -80,7 +64,7 @@ func TestHandlerHappyPath(t *testing.T) {
 // AWS_ACCOUNT_ID: your aws account id.
 // AWS_REGION: the region of your private ECR repository.
 // REPOSITORY_NAME: name of your private ECR repository.
-// INVALID_IMAGE_DIGEST: the digest of anything that isn't an image.
+// INVALID_IMAGE_TAG: a tag on anything that isn't an image.
 func TestHandlerInvalidDigestMediaType(t *testing.T) {
 	// Only SOCI v2 is supported (see resolveIndexVersion in handler.go)
 	testVersions := []string{"V2"}
@@ -93,22 +77,7 @@ func TestHandlerInvalidDigestMediaType(t *testing.T) {
 			}
 			t.Logf("Testing with SOCI index version: %s", version)
 
-			event := events.ECRImageActionEvent{
-				Version:    "1",
-				Id:         "id",
-				DetailType: "ECR Image Action",
-				Source:     "aws.ecr",
-				Account:    os.Getenv("AWS_ACCOUNT_ID"),
-				Time:       "time",
-				Region:     os.Getenv("AWS_REGION"),
-				Detail: events.ECRImageActionEventDetail{
-					ActionType:     "PUSH",
-					Result:         "SUCCESS",
-					RepositoryName: os.Getenv("REPOSITORY_NAME"),
-					ImageDigest:    os.Getenv("INVALID_IMAGE_DIGEST"),
-					ImageTag:       "test",
-				},
-			}
+			event := ConversionRequest{Tag: os.Getenv("INVALID_IMAGE_TAG")}
 
 			// making the test context
 			lc := lambdacontext.LambdaContext{}
@@ -119,7 +88,7 @@ func TestHandlerInvalidDigestMediaType(t *testing.T) {
 
 			resp, err := HandleRequest(ctx, event)
 			if err != nil {
-				t.Fatalf("Invalid image digest is not expected to fail with version %s", version)
+				t.Fatalf("Invalid image tag is not expected to fail with version %s", version)
 			}
 
 			expected_resp := "Exited early due to manifest validation error"
