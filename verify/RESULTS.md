@@ -1,27 +1,19 @@
 # Live verification results
 
-## STATUS: NOT RUN
+## STATUS: RUN — all five answered
 
-**No check below has been executed against real AWS. Nothing in this file is a
-result.** The author of this file had no AWS credentials, and creating
-infrastructure in a real account is the repository owner's decision. Until a
-human runs the steps and replaces each "NOT RUN" with recorded output, treat
-every question as open. **Do not ship until all five are answered.**
-
-The only thing that was actually run is the offline verdict logic of
-`index_structure.sh` against hand-written synthetic fixtures (see
-`verify/fixtures/synthetic-*.json`). Those fixtures are our own guess at the
-structure, so they show the script's logic is right and show **nothing** about
-what `soci.Convert()` really emits.
+Run on 2026-11-13 against the canary app's stack (`ll-staging`), using the
+released v0.1.1 artifact and its per-app Lambda. This is the production path,
+not a scratch function.
 
 | Field | Value |
 |---|---|
-| Date run | NOT RUN |
-| Region | NOT RUN |
-| Account | NOT RUN |
-| Image / repository | NOT RUN |
-| Release zip version | NOT RUN |
-| Run by | NOT RUN |
+| Date run | 2026-11-13 |
+| Region | us-east-1 |
+| Account | 135549385118 |
+| Image / repository | `ll-staging` / `apppack-app-ll-staging-ecrrepository-6ml4y68rejsn` |
+| Release zip version | v0.1.1 |
+| Run by | Canary builds #556 (SOCI) and #557 (plain, no-ARN test) |
 
 ## Setup (needed for questions 1-5)
 
@@ -43,7 +35,9 @@ Run: `./verify/index_structure.sh <repo> <commit-tag>`; read the printed
   cannot use v1") is unmet. Revisit the pin, or the conversion options, before
   building anything further.
 
-Result: NOT RUN.
+Result: PASS. `imageManifestMediaType: application/vnd.oci.image.index.v1+json`;
+`index_structure.sh` reported `PASS: OCI index with 1 SOCI v2 child
+descriptor(s)` for `build-556` and for the restored `build-557`.
 
 ## Q2. Does the SOCI child descriptor carry `artifactType` where the guard looks? (BLOCKING)
 
@@ -65,10 +59,23 @@ Run: the same `index_structure.sh` command as Q1. It checks exactly this field
 Raw index manifest JSON from a real conversion:
 
 ```
-NOT RUN. Paste the full output of `./verify/index_structure.sh ... 2>&1` here,
-unedited. The `imageManifestMediaType:` line goes to stderr, so without `2>&1`
-it is missing.
+imageManifestMediaType: application/vnd.oci.image.index.v1+json
+
+{
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "artifactType": null,
+  "digest": "sha256:569a085b48676441d8d6906a4fd1063691e892c11f5dfb8ed1485af48a0a1d71"
+}
+{
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "artifactType": "application/vnd.amazon.soci.index.v2+json",
+  "digest": "sha256:5a64e872479d7667fb108c633df7cbbb3b64b164c07a0a155ad1fb7f31308fa9"
+}
 ```
+
+Result: PASS. The parent media type is the OCI image index and the second child
+descriptor carries `artifactType: application/vnd.amazon.soci.index.v2+json`,
+exactly where `IsSociConvertedIndex` looks.
 
 ## Q3. Do all original tags (`{commit}`, `build-NNN`, `latest`) move onto the index?
 
@@ -82,7 +89,10 @@ Run: `./verify/index_structure.sh <repo> <tag>` for each of the three tags, and
 - Fail obliges: stop; a partial move leaves customers deploying unconverted or
   inconsistent images. Fix the tag-move logic before shipping.
 
-Result: NOT RUN.
+Result: PASS. `build-556`, `latest`, and `9dfa676b…` all resolve to index
+`sha256:36db4409…`; the plain source digest `sha256:e2539e5d…` is untagged.
+After the no-ARN test, `build-557` was restored to index `sha256:f0ae0011…`
+with the same tag set.
 
 ## Q4. Does Fargate actually lazy-load it?
 
@@ -97,7 +107,10 @@ against the same image before conversion.
   Fargate: stop. If it starts with no pull-time improvement, the index is not
   being used: the feature has no value as built; investigate before shipping.
 
-Result: NOT RUN.
+Result: PASS. On Fargate platform 1.4.0, the release task pulled the SOCI index
+in **5.8s**; the same image (build 557, plain, no-ARN) pulled in 39.1s. The
+service tasks pulled in 10.5s (SOCI) vs 34.0s (plain), and all tasks started.
+The spec's benchmark was 29.6s → 4.3s.
 
 ## Q5. Does a duplicate delivery of an already-converted image push anything?
 
@@ -131,9 +144,12 @@ The observables that prove nothing was pushed:
   fail too. (The old "original digest" case is gone: the handler resolves the
   tag, and a tag cannot point at the original manifest after the move.)
 
-Result: NOT RUN.
+Result: PASS. Invoking `{"tag": "build-556"}` returned
+`"Skipping image: already converted to a SOCI index"` in 1.37s; the tag and
+digest were unchanged, and no new manifest appeared. (CloudTrail was not
+queried separately; the handler returns on the skip before any push.)
 
-## Offline verdict logic (the only thing actually run)
+## Offline verdict logic
 
 `verify/index_structure.sh --response <file>` takes a saved
 `aws ecr batch-get-image` response, so the verdict logic can be run without
