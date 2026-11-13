@@ -44,6 +44,24 @@ func TestDescribeImageReturnsTagsAndSize(t *testing.T) {
 	}
 }
 
+func TestDescribeImageByTagReturnsDigest(t *testing.T) {
+	api := &fakeDescribeAPI{out: &ecr.DescribeImagesOutput{ImageDetails: []types.ImageDetail{{
+		ImageTags:        []string{"build-7"},
+		ImageDigest:      aws.String("sha256:abcd"),
+		ImageSizeInBytes: aws.Int64(1_000),
+	}}}}
+	info, err := DescribeImageByTag(context.Background(), api, "repo", "build-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Found || info.Digest != "sha256:abcd" || !info.SizeKnown || info.SizeBytes != 1_000 {
+		t.Fatalf("unexpected info: %+v", info)
+	}
+	if aws.ToString(api.in.RepositoryName) != "repo" || len(api.in.ImageIds) != 1 || aws.ToString(api.in.ImageIds[0].ImageTag) != "build-7" {
+		t.Fatalf("unexpected request: %+v", api.in)
+	}
+}
+
 func TestDescribeImageReturnsNotFound(t *testing.T) {
 	api := &fakeDescribeAPI{err: &types.ImageNotFoundException{}}
 	info, err := DescribeImage(context.Background(), api, "repo", "sha256:abcd")

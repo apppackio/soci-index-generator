@@ -180,7 +180,7 @@ It does **not** show:
 - anything about the builder image beyond its digest, or the unpinned apk
   packages at the time of the original build.
 - anything about the rest of your stack: the Lambda's IAM role, its
-  environment, the EventBridge rule that triggers it. Those are defined in
+  environment, or the CodeBuild project that invokes it. Those are defined in
   AppPack's CloudFormation templates, not here.
 
 ## Releases are immutable by policy

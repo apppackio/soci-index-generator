@@ -99,47 +99,37 @@ against the same image before conversion.
 
 Result: NOT RUN.
 
-## Q5. Does a tag move re-enter conversion, and are stale re-deliveries harmless?
+## Q5. Does a duplicate delivery of an already-converted image push anything?
 
 The loop guard is the single most important correctness property. **No unit
 test enforces it**: `shouldSkipConversion` is tested, but nothing fails if the
 handler stops calling `IsConverted`, or if someone moves that call below `Pull`
-(see the LOAD-BEARING ORDER comment in `source/handler.go`). This question is
-the only regression net. Re-run it after any change to the handler prologue.
+(see the LOAD-BEARING ORDER comment in `source/handler.go`). Re-run it after
+any change to the handler prologue.
 
-Run, after a successful conversion of an image tagged `{commit}`, `build-NNN`,
-`latest`. First record `aws ecr describe-images --repository-name <repo>`
-(every digest and its tags) as the "before" state. Then invoke the function
-with a synthetic event for each of:
+The builder invokes once per build and there is no EventBridge rule, so tag
+moves cannot re-enter conversion. This question covers duplicate deliveries:
+a builder retry or a manual invoke.
 
-- (b) **the converted index's own digest** (with `image-tag` set to one of the
-  moved tags). This is the event a tag move really produces, and the loop
-  property that matters.
-- (a) **the original image digest** (with the same `image-tag`). The original
-  manifest is still a plain image manifest, so `IsConverted` is false and the
-  loop guard does **not** fire for it; that is correct. It must instead skip
-  because no tag still resolves to it (every tag now points at the index).
+Run after a successful conversion of an image tagged `{commit}`, `build-NNN`,
+`latest`. Record `aws ecr describe-images --repository-name <repo>` as the
+"before" state. Then invoke the function with `{"tag": "<commit-tag>"}`; the
+tag now resolves to the converted index.
 
-Expected responses:
+Expected response: `AlreadyConvertedMessage` ("Skipping image: already
+converted to a SOCI index") with metric `reason: already-converted`, nil error.
 
-| Event | Response | Metric `reason` |
-|---|---|---|
-| (b) index digest | `AlreadyConvertedMessage` ("Skipping image: already converted to a SOCI index") | `already-converted` |
-| (a) original digest | `NoTagsResolveMessage` ("Skipping image: no candidate tag still points at this image") | `no-tags-resolve` |
+The observables that prove nothing was pushed:
 
-Both return a nil error. The observable that proves there is no loop:
-
-1. Run `aws ecr describe-images --repository-name <repo>` again and diff
-   against the "before" state: **no tag changed digest, and no new manifest
+1. `describe-images` diff: **no tag changed digest, and no new manifest
    appears**.
-2. CloudTrail shows **no `PutImage` event** from either invocation.
+2. CloudTrail shows **no `PutImage` event** from the invocation.
 
-- Pass: both responses as in the table, and both observables hold.
-- Fail obliges: if (b) does not return `AlreadyConvertedMessage` or anything
-  is pushed, stop: this is the loop under production conditions. Depends on Q2;
-  if Q2 failed, expect (b) to fail too. If only (a) differs (for example it
-  converts again because a tag still resolves to the original), investigate the
-  tag move (Q3) before touching the guard: (a) is not a guard question.
+- Pass: the expected response and both observables.
+- Fail obliges: if it converts again or anything is pushed, stop: this is the
+  loop under a duplicate delivery. Depends on Q2; if Q2 failed, expect this to
+  fail too. (The old "original digest" case is gone: the handler resolves the
+  tag, and a tag cannot point at the original manifest after the move.)
 
 Result: NOT RUN.
 
