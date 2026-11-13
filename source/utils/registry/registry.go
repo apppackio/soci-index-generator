@@ -23,7 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/awslabs/soci-snapshotter/soci/store"
-	"github.com/containerd/containerd/images"
+	"github.com/containerd/containerd/v2/core/images"
 
 	"slices"
 

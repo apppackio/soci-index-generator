@@ -47,6 +47,10 @@ const (
 // ServiceConfig defaults
 const (
 	DefaultImageServiceAddress = "/run/containerd/containerd.sock"
+
+	// defaultAuthClientTTLSec is how long cached registry auth clients are
+	// reused before being discarded and rebuilt. See `ResolverConfig.AuthClientTTLSec`.
+	defaultAuthClientTTLSec = 3600
 )
 
 // ParallelPullUnpack defaults
@@ -66,10 +70,14 @@ const (
 	// The background fetcher will fetch a single span every `defaultFetchPeriod`.
 	defaultBgFetchPeriodMsec = 500
 
-	// defaultBgMaxQueueSize specifies the maximum size of the bg-fetcher work queue i.e., the maximum number
-	// of span managers that can be queued. In case of overflow, the `Add` call
-	// will block until a span manager is removed from the workqueue.
-	defaultBgMaxQueueSize = 100
+	// defaultBgMaxQueueSize specifies the maximum size of the bg-fetcher work queue,
+	// i.e., the maximum number of span managers that can be queued. When full,
+	// the entry selected by drop_policy is evicted; Add never blocks.
+	defaultBgMaxQueueSize = 300
+
+	// defaultBgDropPolicy specifies which work-queue entry is evicted when
+	// max_queue_size is reached. Valid values: "oldest", "newest".
+	defaultBgDropPolicy = "newest"
 
 	// defaultBgMetricEmitPeriodSec is the default amount of interval at which the background fetcher emits metrics
 	defaultBgMetricEmitPeriodSec = 10
@@ -82,6 +90,14 @@ const (
 
 	// defaultMaxConcurrency is the maximum number of layers allowed to be pulled at once
 	defaultMaxConcurrency = 100
+
+	// defaultPrefetchEnable is the default value for whether prefetch is enabled.
+	defaultPrefetchEnable = false
+
+	// defaultPrefetchMaxConcurrency limits the maximum number of layers that can perform
+	// prefetch operations concurrently at the snapshotter level.
+	// 0 means no limit
+	defaultPrefetchMaxConcurrency = 0
 
 	defaultValidIntervalSec = 60
 
@@ -114,6 +130,12 @@ const (
 
 	// DefaultParallelPullEnable is the default value for whether parallel pull and unpack is enabled
 	DefaultParallelPullUnpackEnable = false
+
+	// DefaultParallelPullAsFallback is the default value for whether parallel pull is used
+	// as a fallback when lazy-load finds no SOCI index.
+	// This is EXPERIMENTAL — lazy-load with containerd content store may have
+	// garbage collection edge cases. See https://github.com/awslabs/soci-snapshotter/issues/1843
+	DefaultExperimentalParallelPullAsFallback = false
 
 	// Defaults for ParallelPullUnpack.
 	// The default values should mirror default containerd values.

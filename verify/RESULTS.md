@@ -32,7 +32,7 @@ what `soci.Convert()` really emits.
    benchmark) to an ECR repository, tagged `{commit}`, `build-NNN`, `latest`.
 3. Invoke the function with a synthetic `ECR Image Action` event for that push.
 
-## Q1. Does `soci.Convert()` with pinned soci-snapshotter v0.11.1 emit a v2 index at all?
+## Q1. Does `soci.Convert()` with pinned soci-snapshotter v0.16.1 emit a v2 index at all?
 
 Run: `./verify/index_structure.sh <repo> <commit-tag>`; read the printed
 `imageManifestMediaType` and manifest.

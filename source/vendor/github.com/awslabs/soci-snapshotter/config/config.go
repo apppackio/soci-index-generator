@@ -39,6 +39,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -68,24 +69,39 @@ type Config struct {
 	// DebugAddress is a Unix domain socket address where the snapshotter exposes /debug/ endpoints.
 	DebugAddress string `toml:"debug_address"`
 
-	// MetadataStore is the type of the metadata store to use.
+	// MetadataStore is the type of the metadata store to use. Valid values are
+	// "db" (a single shared on-disk bbolt database, the default) and
+	// "db-multi" (one bbolt database per layer, to avoid the shared writer
+	// lock).
 	MetadataStore string `toml:"metadata_store"`
+
+	// MetadataDBNoSync disables bbolt's per-transaction fsync for the metadata
+	// store. The metadata DB is derived data rebuilt from zTOCs on every daemon
+	// restart, so fsync durability is unnecessary. Skipping it removes
+	// synchronous disk flushes from layer metadata initialization.
+	MetadataDBNoSync bool `toml:"metadata_db_no_sync"`
+
+	// MetadataInsertionChunkSize is the maximum number of node insertions per
+	// bbolt transaction during metadata store initialization. Larger chunks
+	// amortize per-commit overhead over more insertions. 0 means use the
+	// default (5000).
+	MetadataInsertionChunkSize int `toml:"metadata_insertion_chunk_size"`
 
 	// SkipCheckSnapshotterSupported is a flag to skip check for overlayfs support needed to confirm if SOCI can work
 	SkipCheckSnapshotterSupported bool `toml:"skip_check_snapshotter_supported"`
 }
 type configParser func(*Config) error
 
-var parsers = []configParser{parseRootConfig, parseServiceConfig, parseFSConfig, parseParallelConfig}
+var parsers = []configParser{parseRootConfig, parseServiceConfig, parseFSConfig, parseParallelConfig, parseResolverConfig}
 
 // NewConfig returns an initialized Config with default values set.
 func NewConfig() *Config {
 	cfg := &Config{}
 
 	// Set any defaults which do not align with Go zero values.
-	var initParsers = []configParser{defaultPullModes, defaultDirectoryCacheConfig}
-	for _, p := range append(initParsers, parsers...) {
-		p(cfg)
+	var initParsers = []configParser{defaultPullModes, defaultDirectoryCacheConfig, defaultBackgroundFetchConfig}
+	if err := parseConfig(cfg, append(initParsers, parsers...)); err != nil {
+		return nil
 	}
 
 	return cfg
@@ -102,18 +118,26 @@ func NewConfigFromToml(cfgPath string) (*Config, error) {
 	defer f.Close()
 
 	cfg := NewConfig()
+	if cfg == nil {
+		return nil, errors.New("error creating default config")
+	}
 	// Get configuration from specified file
 	if err = toml.NewDecoder(f).Decode(cfg); err != nil {
 		return nil, fmt.Errorf("failed to load config file %q: %w", cfgPath, err)
 	}
-	parseConfig(cfg)
+	if err := parseConfig(cfg, parsers); err != nil {
+		return nil, fmt.Errorf("config file at %q: %w", cfgPath, err)
+	}
 	return cfg, nil
 }
 
-func parseConfig(cfg *Config) {
-	for _, p := range parsers {
-		p(cfg)
+func parseConfig(cfg *Config, cfgParsers []configParser) error {
+	for _, p := range cfgParsers {
+		if err := p(cfg); err != nil {
+			return fmt.Errorf("failed to parse config: %w", err)
+		}
 	}
+	return nil
 }
 
 func parseRootConfig(cfg *Config) error {
