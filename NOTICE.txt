@@ -12,6 +12,8 @@ differ from that source. Paths are relative to source/ in this repository.
 Modified:
   Dockerfile
   Makefile
+  go.mod
+  go.sum
   handler.go
   handler_test.go
   utils/registry/registry.go
@@ -29,9 +31,12 @@ Added:
 
 Files added by AppPack carry the header "Added by AppPack (see NOTICE.txt)";
 files modified from upstream carry "Modified by AppPack from the upstream
-original". Files with neither header are unchanged from upstream.
+original". Files outside vendor/ with neither header are unchanged from
+upstream.
 
-Removed: none. vendor/ is byte-identical to upstream.
+Removed: none. vendor/ is produced by `go mod vendor`; it was byte-identical
+to upstream at the commit above, but dependency updates regenerate it, so it
+now reflects this repository's module graph rather than that commit alone.
 
 Files outside source/ (README.md, docs/, .github/, renovate.json, the
 top-level Makefile, REGIONS.txt) were added by AppPack and are not part of
