@@ -2,7 +2,12 @@
 name: CI
 
 on:
+  # Scope pushes to main. An unfiltered `push` trigger plus `pull_request`
+  # runs every PR branch twice (one run per event), paying for the full test,
+  # build and cold reproducibility check twice. Tag pushes are covered by
+  # release.yml, which runs the same checks before publishing.
   push:
+    branches: [main]
   pull_request:
 
 permissions:
