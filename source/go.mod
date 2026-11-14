@@ -13,7 +13,7 @@ require (
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/rs/zerolog v1.35.1
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	oras.land/oras-go/v2 v2.7.0
 )
 
